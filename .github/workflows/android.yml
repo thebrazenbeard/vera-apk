@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   test:
@@ -16,46 +17,49 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - id: android
-        continue-on-error: true
-        uses: android-actions/setup-android@v3
-      - id: gradle_setup
-        continue-on-error: true
-        uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
-      - name: Install SDK and run unit tests
+      - name: Verify Android foundation
         id: verify
         shell: bash
         run: |
           set +e
           {
-            echo "setup-android outcome: ${{ steps.android.outcome }}"
-            echo "setup-gradle outcome: ${{ steps.gradle_setup.outcome }}"
-            echo "JAVA_HOME=$JAVA_HOME"
+            echo "=== toolchain ==="
             java -version
-            command -v sdkmanager || true
+            echo "sdkmanager=$(command -v sdkmanager || true)"
+            echo "gradle=$(command -v gradle || true)"
+            echo "=== sdk install ==="
             sdkmanager "platforms;android-37" "build-tools;36.0.0"
             sdk_rc=$?
-            command -v gradle || true
+            echo "=== gradle ==="
             gradle --version
             gradle --no-daemon --stacktrace :app:testDebugUnitTest
             test_rc=$?
             echo "sdk_rc=$sdk_rc"
             echo "test_rc=$test_rc"
-          } > android-ci.log 2>&1
-          if [ "$sdk_rc" -ne 0 ] || [ "$test_rc" -ne 0 ]; then
-            echo "exit_code=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+          } 2>&1 | tee android-ci.log
+          sdk_rc=$(grep '^sdk_rc=' android-ci.log | tail -1 | cut -d= -f2)
+          test_rc=$(grep '^test_rc=' android-ci.log | tail -1 | cut -d= -f2)
+          if [ "$sdk_rc" = "0" ] && [ "$test_rc" = "0" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          exit 0
-      - name: Upload Android CI diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          exit 1
+      - name: Report failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
         with:
-          name: android-ci-diagnostics
-          path: android-ci.log
-      - name: Enforce verification result
-        shell: bash
-        run: test "${{ steps.verify.outputs.exit_code }}" = "0"
+          script: |
+            const fs = require('fs');
+            const body = fs.existsSync('android-ci.log') ? fs.readFileSync('android-ci.log','utf8') : 'android-ci.log was not produced';
+            const clipped = body.length > 12000 ? body.slice(-12000) : body;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'Android CI diagnostic from exact head '+context.sha+'\n\n```text\n'+clipped+'\n```'
+            });
