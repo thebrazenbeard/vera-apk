@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   test:
@@ -17,49 +16,17 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK 37
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-37 build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
-      - name: Verify Android foundation
-        id: verify
-        shell: bash
+      - name: Verify toolchain
         run: |
-          set +e
-          {
-            echo "=== toolchain ==="
-            java -version
-            echo "sdkmanager=$(command -v sdkmanager || true)"
-            echo "gradle=$(command -v gradle || true)"
-            echo "=== sdk install ==="
-            sdkmanager "platforms;android-37" "build-tools;36.0.0"
-            sdk_rc=$?
-            echo "=== gradle ==="
-            gradle --version
-            gradle --no-daemon --stacktrace :app:testDebugUnitTest
-            test_rc=$?
-            echo "sdk_rc=$sdk_rc"
-            echo "test_rc=$test_rc"
-          } 2>&1 | tee android-ci.log
-          sdk_rc=$(grep '^sdk_rc=' android-ci.log | tail -1 | cut -d= -f2)
-          test_rc=$(grep '^test_rc=' android-ci.log | tail -1 | cut -d= -f2)
-          if [ "$sdk_rc" = "0" ] && [ "$test_rc" = "0" ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "ok=false" >> "$GITHUB_OUTPUT"
-          exit 1
-      - name: Report failure on PR
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.existsSync('android-ci.log') ? fs.readFileSync('android-ci.log','utf8') : 'android-ci.log was not produced';
-            const clipped = body.length > 12000 ? body.slice(-12000) : body;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: 'Android CI diagnostic from exact head '+context.sha+'\n\n```text\n'+clipped+'\n```'
-            });
+          java -version
+          gradle --version
+          sdkmanager --list_installed
+      - name: Run unit tests
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
