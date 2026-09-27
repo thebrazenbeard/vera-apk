@@ -16,11 +16,20 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - name: Android preflight
+        id: preflight
+        continue-on-error: true
+        run: |
+          {
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            command -v sdkmanager || true
+            sdkmanager --version || true
+          } > preflight-log.txt 2>&1
       - name: Install Android SDK 37
         id: sdk
         continue-on-error: true
-        run: sdkmanager "platforms;android-37" "build-tools;36.0.0" > sdk-log.txt 2>&1
+        run: yes | sdkmanager "platforms;android-37" "build-tools;36.0.0" > sdk-log.txt 2>&1
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
@@ -33,9 +42,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-diagnostics
+          if-no-files-found: error
           path: |
+            preflight-log.txt
             sdk-log.txt
             gradle-log.txt
       - name: Fail on diagnostic step failure
-        if: steps.sdk.outcome != 'success' || steps.tests.outcome != 'success'
+        if: steps.preflight.outcome != 'success' || steps.sdk.outcome != 'success' || steps.tests.outcome != 'success'
         run: exit 1
