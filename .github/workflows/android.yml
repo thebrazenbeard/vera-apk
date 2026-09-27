@@ -18,14 +18,40 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: Setup Android SDK
+        id: android
+        continue-on-error: true
         uses: android-actions/setup-android@v4
         with:
           packages: |
             platform-tools
             platforms;android-37
             build-tools;36.0.0
+      - name: Android preflight
+        if: always()
+        run: |
+          {
+            echo "JAVA_HOME=$JAVA_HOME"
+            java --version
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            command -v sdkmanager || true
+            sdkmanager --version || true
+          } > preflight-log.txt 2>&1
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.6.0"
       - name: Run unit tests
-        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+        id: tests
+        continue-on-error: true
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest > gradle-log.txt 2>&1
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-diagnostics
+          path: |
+            preflight-log.txt
+            gradle-log.txt
+      - name: Fail on diagnostic step failure
+        if: steps.android.outcome != 'success' || steps.tests.outcome != 'success'
+        run: exit 1
