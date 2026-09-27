@@ -16,17 +16,27 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Set up Android SDK 37
-        uses: android-actions/setup-android@v4
-        with:
-          packages: "platform-tools platforms;android-37 build-tools;36.0.0"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.6.0"
-      - name: Verify toolchain
+      - name: Provision Android API 37
+        shell: bash
         run: |
+          set -euo pipefail
+          command -v sdkmanager
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;36.0.0"
+      - name: Provision Gradle 9.6.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://services.gradle.org/distributions/gradle-9.6.0-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          echo "/tmp/gradle-9.6.0/bin" >> "$GITHUB_PATH"
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
           java -version
           gradle --version
           sdkmanager --list_installed
       - name: Run unit tests
+        shell: bash
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
