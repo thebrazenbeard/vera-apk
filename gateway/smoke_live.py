@@ -34,7 +34,7 @@ def main():
     assert code == 200 and info.get("mode") == "response_only"
     models = info["models"]
     assert models, "no available local models"
-    model = next((x for x in models if x.startswith("qwen2.5-coder:1.5b")), models[0])
+    model = next((x for x in models if x == "vera-local:latest"), models[0])
     code, reply = fetch(base + "/v1/chat", secret,
                         {"model": model, "messages": [{"role": "user",
                          "content": "Reply with one word: READY"}]})
