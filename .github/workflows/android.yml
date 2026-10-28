@@ -1,4 +1,4 @@
-name: Android foundation
+name: Android companion and inference gateway
 on:
   push:
   pull_request:
@@ -23,11 +23,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.6.0"
-      - name: Run unit tests
+      - name: Test inference gateway (stdlib-only)
+        run: python3 -m unittest discover -s gateway/tests -v
+      - name: Run Android unit tests
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
       - name: Build installable debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
-      - name: Upload debug APK
+      - name: Upload installable debug APK
         uses: actions/upload-artifact@v4
         with:
           name: vera-companion-debug
