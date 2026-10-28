@@ -68,11 +68,13 @@ public final class GatewayClient {
         return found;
     }
 
-    public static String chat(String base, String token, String model, JSONArray history)
-            throws Exception {
+    public static String chat(String base, String token, String model, JSONArray history,
+                              String sessionId, String requestId) throws Exception {
         JSONObject body = new JSONObject();
         body.put("model", model);
         body.put("messages", history);
+        body.put("session_id", sessionId);
+        body.put("request_id", requestId);
         JSONObject result = request(base, token, "/v1/chat", body);
         if (!"response_only".equals(result.optString("mode"))) {
             throw new IllegalStateException("Gateway authority mismatch");

@@ -396,18 +396,20 @@ public final class MainActivity extends Activity {
         } catch (Exception e) { state("Invalid session"); return; }
         String url = SecureConfig.endpoint(this);
         busy = true;
-        state("Generating on " + selected + "...");
+        append("YOU", prompt);
+        input.setText("");
+        state("Message queued - Vera is generating on " + selected + "...");
+        final String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
         worker.execute(() -> {
             try {
-                String reply = GatewayClient.chat(url, SecureConfig.token(this), selected, messages);
+                String reply = GatewayClient.chat(url, SecureConfig.token(this), selected, messages,
+                        SecureConfig.sessionId(this), requestId);
                 runOnUiThread(() -> {
                     try {
                         history.add(new JSONObject().put("role", "user").put("content", prompt));
                         history.add(new JSONObject().put("role", "assistant").put("content", reply));
                     } catch (Exception ignored) { }
-                    append("YOU", prompt);
                     append("VERA  •  " + selected, reply);
-                    input.setText("");
                     busy = false;
                     state("Serving model: " + selected);
                 });
@@ -420,8 +422,10 @@ public final class MainActivity extends Activity {
                         SecureConfig.setConnectionWanted(this, false);
                         retryHandler.removeCallbacks(reconnect);
                     }
-                    state(authenticationLost ? "Pairing was rejected; tap CONNECT again."
-                            : "Inference failed; pairing remains active. Retry your message.");
+                    if (input.getText().toString().isEmpty()) input.setText(prompt);
+                    append("SYSTEM", "Message not delivered. Your draft is restored.");
+                    state(authenticationLost ? "Pairing rejected; reconnect to retry."
+                            : "Message not delivered; retry when ready.");
                 });
             }
         });

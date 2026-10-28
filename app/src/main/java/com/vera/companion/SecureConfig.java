@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties;
 import android.util.Base64;
 
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.security.KeyStore;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -72,6 +73,16 @@ public final class SecureConfig {
     public static void setConnectionWanted(Context context, boolean wanted) {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putBoolean("connection_wanted", wanted).apply();
+    }
+
+    /** Stable pseudonymous device-session identifier, regenerated on UNPAIR. */
+    public static String sessionId(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        String existing = prefs.getString("chat_session_id", "");
+        if (existing != null && existing.matches("[a-f0-9]{32}")) return existing;
+        String created = UUID.randomUUID().toString().replace("-", "");
+        prefs.edit().putString("chat_session_id", created).commit();
+        return created;
     }
 
     public static void clear(Context context) {

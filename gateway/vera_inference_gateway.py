@@ -6,6 +6,7 @@ never via a router port-forward or public Tailscale Funnel.
 """
 import argparse
 import hmac
+import sys
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -61,8 +62,17 @@ def models():
 
 
 def valid_chat(payload, allowed):
-    if type(payload) is not dict or set(payload) != {"model", "messages"}:
+    if type(payload) is not dict:
         raise ValueError("chat schema invalid")
+    fields = set(payload)
+    if fields not in ({"model", "messages"},
+                      {"model", "messages", "session_id", "request_id"}):
+        raise ValueError("chat schema invalid")
+    if "session_id" in payload:
+        for key in ("session_id", "request_id"):
+            value = payload[key]
+            if type(value) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value):
+                raise ValueError("invalid session/request identifier")
     model, items = payload["model"], payload["messages"]
     if type(model) is not str or model not in allowed:
         raise ValueError("model unavailable")
@@ -83,8 +93,9 @@ def valid_chat(payload, allowed):
 class BoundedServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
-    def __init__(self, address, handler, token):
+    def __init__(self, address, handler, token, journal=None):
         self.token = token
+        self.journal = journal
         self.slots = threading.BoundedSemaphore(6)
         super().__init__(address, handler)
     def process_request(self, request, client_address):
@@ -153,17 +164,30 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise ValueError("incomplete request")
-            model, messages = valid_chat(strict_json(raw), models())
+            payload = strict_json(raw)
+            model, messages = valid_chat(payload, models())
         except (ValueError, TypeError, UnicodeError, AttributeError):
             return self.respond(400, {"error": "invalid chat request"})
         except Exception:
             return self.respond(503, {"error": "model inventory unavailable"})
         try:
+            session_id = payload.get("session_id")
+            request_id = payload.get("request_id")
+            if self.server.journal is not None and session_id is not None:
+                prior = self.server.journal.recent(session_id, limit=8, max_bytes=14000)
+                messages = []
+                for turn in prior:
+                    messages.extend(({"role": "user", "content": turn["user"]},
+                                     {"role": "assistant", "content": turn["assistant"]}))
+                messages.append({"role": "user", "content": payload["messages"][-1]["content"]})
             result = ollama("/api/chat", {"model": model, "messages": messages,
                 "stream": False, "options": {"num_predict": 256}}, timeout=90)
             answer = result.get("message", {}).get("content")
             if type(answer) is not str or not 1 <= len(answer) <= MAX_REPLY:
                 raise ValueError("invalid model response")
+            if self.server.journal is not None and session_id is not None:
+                self.server.journal.append_turn(session_id, request_id, model,
+                    payload["messages"][-1]["content"], answer)
             return self.respond(200, {"reply": answer, "model": model,
                                       "node": "local", "mode": "response_only"})
         except Exception:
@@ -176,13 +200,24 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--port", type=int, default=18777)
+    parser.add_argument("--journal-db", type=Path)
+    parser.add_argument("--journal-key-file", type=Path)
+    parser.add_argument("--stm-root", type=Path)
     args = parser.parse_args()
     token = args.token_file.read_text(encoding="ascii").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
         parser.error("invalid pairing token file")
     if not 1024 <= args.port <= 65535:
         parser.error("port out of range")
-    with BoundedServer(("127.0.0.1", args.port), Handler, token) as server:
+    journal = None
+    config = (args.journal_db, args.journal_key_file, args.stm_root)
+    if any(x is not None for x in config):
+        if not all(x is not None for x in config):
+            parser.error("journal requires db, key file and stm root")
+        sys.path.insert(0, str(args.stm_root.resolve()))
+        from stm_phone_journal import EncryptedJournal
+        journal = EncryptedJournal(args.journal_db, args.journal_key_file)
+    with BoundedServer(("127.0.0.1", args.port), Handler, token, journal=journal) as server:
         print("Vera inference gateway listening on loopback:", args.port, flush=True)
         server.serve_forever(poll_interval=0.5)
 
