@@ -44,7 +44,8 @@ public final class SecureConfig {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putString("url", normalized)
                 .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
-                .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply();
+                .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .putBoolean("connection_wanted", false).apply();
     }
 
     public static String endpoint(Context context) {
@@ -60,6 +61,17 @@ public final class SecureConfig {
         cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128,
                 Base64.decode(iv, Base64.NO_WRAP)));
         return new String(cipher.doFinal(Base64.decode(enc, Base64.NO_WRAP)), StandardCharsets.UTF_8);
+    }
+
+    /** Previous user connection intent, not proof of a live transport. */
+    public static boolean wantsConnection(Context context) {
+        return context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getBoolean("connection_wanted", false);
+    }
+
+    public static void setConnectionWanted(Context context, boolean wanted) {
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+                .putBoolean("connection_wanted", wanted).apply();
     }
 
     public static void clear(Context context) {

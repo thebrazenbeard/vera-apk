@@ -1,9 +1,20 @@
 package com.vera.companion;
 
 import android.app.Activity;
+import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
 import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -12,7 +23,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** User-initiated, response-only local inference interface. */
+/** Foreground-only, user-paired inference client; no effect authority. */
 public final class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ArrayList<JSONObject> history = new ArrayList<>();
@@ -20,42 +31,105 @@ public final class MainActivity extends Activity {
     private TextView status, conversation;
     private Spinner models;
     private Button send;
+    private ScrollView feed;
+    private LinearLayout root;
+    private ImageView backdrop;
     private boolean connected, busy;
+    private boolean foreground;
+    private int reconnectAttempts;
+    private final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private final Runnable reconnect = () -> {
+        if (foreground && !connected && !busy && SecureConfig.wantsConnection(this))
+            attemptConnection();
+    };
 
-    private TextView text(String s, int sp) {
-        TextView view = new TextView(this);
-        view.setText(s);
-        view.setTextSize(sp);
-        view.setTextColor(Color.WHITE);
-        view.setPadding(8, 10, 8, 10);
-        return view;
+    private int dp(int size) {
+        return Math.round(size * getResources().getDisplayMetrics().density);
     }
+
+    private TextView text(String value, int sp) {
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(sp);
+        v.setTextColor(Color.WHITE);
+        v.setPadding(dp(5), dp(8), dp(5), dp(8));
+        return v;
+    }
+
     private Button addButton(LinearLayout parent, String caption, Runnable action) {
-        Button button = new Button(this);
-        button.setText(caption);
-        button.setOnClickListener(v -> action.run());
-        parent.addView(button);
-        return button;
+        Button b = new Button(this);
+        b.setText(caption);
+        b.setMinimumHeight(dp(48));
+        b.setOnClickListener(v -> action.run());
+        parent.addView(b);
+        return b;
     }
+
     private void state(String detail) {
-        status.setText((connected ? "CONNECTED · RESPONSE ONLY" : "UNBOUND · TAILNET ONLY") + "\n" + detail);
+        status.setText((connected ? "CONNECTED - RESPONSE ONLY"
+                : SecureConfig.wantsConnection(this) ? "RECONNECTING - TAILNET" : "UNBOUND - TAILNET ONLY")
+                + "\n" + detail);
         send.setEnabled(connected && !busy);
     }
-    private void append(String name, String value) {
-        conversation.append("\n" + name + "\n" + value + "\n");
+
+    private void append(String who, String value) {
+        conversation.append("\n" + who + "\n" + value + "\n");
+        feed.post(() -> feed.fullScroll(View.FOCUS_DOWN));
     }
 
-    @Override public void onCreate(Bundle b) {
-        super.onCreate(b);
-        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        LinearLayout root = new LinearLayout(this);
+    private void applySafeInsets() {
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int statusInset;
+            int navigationInset;
+            int keyboardInset = 0;
+            if (Build.VERSION.SDK_INT >= 30) {
+                statusInset = insets.getInsets(WindowInsets.Type.statusBars()
+                        | WindowInsets.Type.displayCutout()).top;
+                navigationInset = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                keyboardInset = insets.getInsets(WindowInsets.Type.ime()).bottom;
+            } else {
+                statusInset = insets.getSystemWindowInsetTop();
+                navigationInset = insets.getSystemWindowInsetBottom();
+            }
+            view.setPadding(dp(16), SafeAreaPadding.top(dp(12), statusInset),
+                    dp(16), SafeAreaPadding.bottom(dp(12), navigationInset, keyboardInset));
+            return insets;
+        });
+        root.requestApplyInsets();
+    }
+
+    @Override public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
+        getWindow().setStatusBarColor(Color.rgb(18, 22, 34));
+        getWindow().setNavigationBarColor(Color.BLACK);
+
+        FrameLayout canvas = new FrameLayout(this);
+        backdrop = new ImageView(this);
+        backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        chooseBackground();
+        canvas.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
+        View dimmer = new View(this);
+        dimmer.setBackgroundColor(Color.argb(220, 13, 18, 29));
+        canvas.addView(dimmer, new FrameLayout.LayoutParams(-1, -1));
+
+        root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(18, 22, 34));
-        root.setPadding(16, 12, 16, 12);
-        setContentView(root);
-        root.addView(text("VERA  /  LOCAL INFERENCE", 23));
+        root.setFocusableInTouchMode(true);
+        canvas.addView(root, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(canvas);
+        applySafeInsets();
+
+        feed = new ScrollView(this);
+        feed.setFillViewport(false);
+        root.addView(feed, new LinearLayout.LayoutParams(-1, 0, 1f));
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        feed.addView(content);
+        content.addView(text("VERA  /  LOCAL INFERENCE", 23));
         status = text("", 13);
-        root.addView(status);
+        content.addView(status);
         endpoint = new EditText(this);
         endpoint.setTextColor(Color.WHITE);
         endpoint.setHintTextColor(Color.LTGRAY);
@@ -63,55 +137,108 @@ public final class MainActivity extends Activity {
         endpoint.setHint("https://lappy.<tailnet>.ts.net:8443");
         endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         endpoint.setText(SecureConfig.endpoint(this));
-        root.addView(endpoint);
+        content.addView(endpoint);
         secret = new EditText(this);
         secret.setTextColor(Color.WHITE);
         secret.setHintTextColor(Color.LTGRAY);
         secret.setHint("Pairing token from Lappy");
         secret.setSingleLine(true);
         secret.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        root.addView(secret);
+        content.addView(secret);
         LinearLayout controls = new LinearLayout(this);
-        root.addView(controls);
+        content.addView(controls);
         addButton(controls, "SAVE", this::save);
         addButton(controls, "CONNECT", this::connect);
         addButton(controls, "UNPAIR", this::unpair);
         models = new Spinner(this);
-        root.addView(models);
-        ScrollView scroll = new ScrollView(this);
-        conversation = text("Connect through Tailscale to access your local models. No automatic network activity.\n", 16);
-        scroll.addView(conversation);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        content.addView(models);
+        conversation = text("Connect through Tailscale to access your local models.\n"
+                + "No automatic messages or external actions.\n", 16);
+        content.addView(conversation);
+
         LinearLayout composer = new LinearLayout(this);
-        root.addView(composer);
+        composer.setGravity(Gravity.CENTER_VERTICAL);
+        composer.setPadding(dp(4), dp(7), dp(4), dp(4));
+        composer.setBackgroundColor(Color.rgb(23, 32, 47));
+        root.addView(composer, new LinearLayout.LayoutParams(-1, -2));
         input = new EditText(this);
-        input.setHint("Message Vera");
-        input.setHintTextColor(Color.LTGRAY);
         input.setTextColor(Color.WHITE);
+        input.setHintTextColor(Color.LTGRAY);
+        input.setHint("Message Vera...");
+        input.setTextSize(17);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setSingleLine(false);
+        input.setMinLines(2);
         input.setMaxLines(4);
-        composer.addView(input, new LinearLayout.LayoutParams(0, -2, 1));
+        input.setMinHeight(dp(56));
+        input.setGravity(Gravity.TOP);
+        input.setPadding(dp(12), dp(9), dp(12), dp(9));
+        input.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(33, 44, 59));
+        background.setCornerRadius(dp(12));
+        background.setStroke(dp(1), Color.rgb(93, 146, 169));
+        input.setBackground(background);
+        LinearLayout.LayoutParams messageSize = new LinearLayout.LayoutParams(0, -2, 1f);
+        messageSize.rightMargin = dp(8);
+        composer.addView(input, messageSize);
         send = addButton(composer, "SEND", this::send);
-        state(SecureConfig.endpoint(this).isEmpty() ? "No endpoint paired" : "Pairing saved; tap Connect");
+        send.setMinimumWidth(dp(74));
+        root.requestFocus();
+        state(SecureConfig.endpoint(this).isEmpty() ? "No endpoint paired" : "Tap CONNECT");
     }
+
+    private void chooseBackground() {
+        int orientation = getResources().getConfiguration().orientation;
+        backdrop.setImageResource(orientation == Configuration.ORIENTATION_LANDSCAPE
+                ? R.drawable.vera_phone_landscape : R.drawable.vera_phone_portrait);
+    }
+
+    @Override public void onConfigurationChanged(Configuration updated) {
+        super.onConfigurationChanged(updated);
+        chooseBackground();
+        root.requestApplyInsets();
+    }
+
     private void save() {
         try {
             SecureConfig.save(this, endpoint.getText().toString(), secret.getText().toString().trim());
             secret.setText("");
             connected = false;
             history.clear();
-            state("Saved securely. Tap Connect.");
+            state("Saved securely. Tap CONNECT.");
         } catch (Exception e) { state("Invalid endpoint or token"); }
     }
+
     private void unpair() {
         SecureConfig.clear(this);
         endpoint.setText("");
         secret.setText("");
         history.clear();
         connected = false;
+        retryHandler.removeCallbacks(reconnect);
         state("Pairing erased from this device");
     }
+
     private void connect() {
         if (busy) return;
+        SecureConfig.setConnectionWanted(this, true);
+        reconnectAttempts = 0;
+        retryHandler.removeCallbacks(reconnect);
+        attemptConnection();
+    }
+
+    private void scheduleReconnect() {
+        if (!foreground || !SecureConfig.wantsConnection(this)) return;
+        retryHandler.removeCallbacks(reconnect);
+        retryHandler.postDelayed(reconnect,
+                ConnectionPolicy.reconnectDelayMs(reconnectAttempts++));
+    }
+
+    private void attemptConnection() {
+        if (busy || !SecureConfig.wantsConnection(this)) return;
         busy = true;
         connected = false;
         state("Checking local gateway...");
@@ -121,24 +248,52 @@ public final class MainActivity extends Activity {
                 List<String> available = GatewayClient.models(url, SecureConfig.token(this));
                 if (available.isEmpty()) throw new IllegalStateException("No models");
                 runOnUiThread(() -> {
-                    models.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, available));
+                    ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
+                            android.R.layout.simple_spinner_item, available) {
+                        @Override public View getView(int position, View convertView, ViewGroup parent) {
+                            TextView v = (TextView) super.getView(position, convertView, parent);
+                            v.setTextColor(Color.WHITE);
+                            v.setPadding(dp(5), dp(10), dp(5), dp(10));
+                            return v;
+                        }
+                    };
+                    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                    String previous = models.getSelectedItem() == null ? ""
+                            : models.getSelectedItem().toString();
+                    models.setAdapter(adapter);
+                    int matching = available.indexOf(previous);
+                    if (matching >= 0) models.setSelection(matching);
                     busy = false;
                     connected = true;
+                    reconnectAttempts = 0;
+                    retryHandler.removeCallbacks(reconnect);
                     state(available.size() + " models available");
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> { busy = false; state("Connection refused. Check Tailscale and pairing."); });
+                boolean unauthorized = ConnectionPolicy.requiresPairing(e.getMessage());
+                runOnUiThread(() -> {
+                    busy = false;
+                    if (unauthorized) SecureConfig.setConnectionWanted(this, false);
+                    state(unauthorized ? "Pairing rejected. Check your token."
+                            : "Gateway unavailable; retrying while app is open.");
+                    if (!unauthorized) scheduleReconnect();
+                });
             }
         });
     }
+
     private void send() {
         if (!connected || busy || models.getSelectedItem() == null) return;
         String prompt = input.getText().toString().trim();
-        if (prompt.isEmpty() || prompt.length() > 4096) { state("Message must be 1–4096 characters"); return; }
+        if (prompt.isEmpty() || prompt.length() > 4096) {
+            state("Message must be 1-4096 characters");
+            return;
+        }
         String selected = models.getSelectedItem().toString();
         JSONArray messages = new JSONArray();
         try {
-            for (int i = Math.max(0, history.size() - 10); i < history.size(); i++) messages.put(history.get(i));
+            for (int i = Math.max(0, history.size() - 10); i < history.size(); i++)
+                messages.put(history.get(i));
             messages.put(new JSONObject().put("role", "user").put("content", prompt));
         } catch (Exception e) { state("Invalid session"); return; }
         String url = SecureConfig.endpoint(this);
@@ -159,9 +314,36 @@ public final class MainActivity extends Activity {
                     state("Local model: " + selected);
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> { busy = false; state("Inference unavailable; no message saved"); });
+                boolean authenticationLost = ConnectionPolicy.requiresPairing(e.getMessage());
+                runOnUiThread(() -> {
+                    busy = false;
+                    if (authenticationLost) {
+                        connected = false;
+                        SecureConfig.setConnectionWanted(this, false);
+                        retryHandler.removeCallbacks(reconnect);
+                    }
+                    state(authenticationLost ? "Pairing was rejected; tap CONNECT again."
+                            : "Inference failed; pairing remains active. Retry your message.");
+                });
             }
         });
     }
-    @Override public void onDestroy() { worker.shutdownNow(); super.onDestroy(); }
+
+    @Override protected void onResume() {
+        super.onResume();
+        foreground = true;
+        if (SecureConfig.wantsConnection(this) && !busy) attemptConnection();
+    }
+
+    @Override protected void onPause() {
+        foreground = false;
+        retryHandler.removeCallbacks(reconnect);
+        super.onPause();
+    }
+
+    @Override public void onDestroy() {
+        retryHandler.removeCallbacks(reconnect);
+        worker.shutdownNow();
+        super.onDestroy();
+    }
 }
