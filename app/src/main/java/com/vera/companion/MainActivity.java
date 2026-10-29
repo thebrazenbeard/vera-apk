@@ -33,7 +33,9 @@ public final class MainActivity extends Activity {
     private LinearLayout transcript, connectionPanel;
     private Button connectionToggle;
     private Spinner models;
-    private Button send;
+    private Button send, v2NewChat;
+    private String v2SessionId = "";
+    private boolean usingV2;
     private ScrollView feed;
     private LinearLayout root;
     private ImageView backdrop;
@@ -73,7 +75,7 @@ public final class MainActivity extends Activity {
     }
 
     private void state(String detail) {
-        status.setText((connected ? "CONNECTED - RESPONSE ONLY"
+        status.setText((connected ? (usingV2 ? "V2 DEVICE VERIFIED" : "CONNECTED - RESPONSE ONLY")
                 : SecureConfig.wantsConnection(this) ? "RECONNECTING - TAILNET" : "UNBOUND - TAILNET ONLY")
                 + "\n" + detail);
         send.setEnabled(connected && !busy);
@@ -197,6 +199,8 @@ public final class MainActivity extends Activity {
             connectionPanel.setVisibility(show ? View.VISIBLE : View.GONE);
             connectionToggle.setText(show ? "CONNECTION SETTINGS  ▴" : "CONNECTION SETTINGS  ▾");
         });
+        v2NewChat = addButton(content, "NEW SECURE CHAT", this::newSecureChat);
+        v2NewChat.setVisibility(View.GONE);
         connectionPanel = new LinearLayout(this);
         connectionPanel.setOrientation(LinearLayout.VERTICAL);
         connectionPanel.setPadding(dp(10), dp(8), dp(10), dp(8));
@@ -209,7 +213,7 @@ public final class MainActivity extends Activity {
         endpoint.setTextColor(Color.WHITE);
         endpoint.setHintTextColor(Color.LTGRAY);
         endpoint.setSingleLine(true);
-        endpoint.setHint("https://lappy.<tailnet>.ts.net:8443");
+        endpoint.setHint("https://lappy.<tailnet>.ts.net:8443 (legacy) or :8444 (V2)");
         endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         endpoint.setText(SecureConfig.endpoint(this));
         connectionPanel.addView(endpoint);
@@ -304,6 +308,9 @@ public final class MainActivity extends Activity {
             secret.setText("");
             connected = false;
             history.clear();
+            usingV2 = false;
+            v2SessionId = "";
+            v2NewChat.setVisibility(View.GONE);
             connectionPanel.setVisibility(View.GONE);
             connectionToggle.setText("CONNECTION SETTINGS  ▾");
             state("Saved securely. Tap CONNECT.");
@@ -315,6 +322,9 @@ public final class MainActivity extends Activity {
         endpoint.setText("");
         secret.setText("");
         history.clear();
+        usingV2 = false;
+        v2SessionId = "";
+        v2NewChat.setVisibility(View.GONE);
         connected = false;
         retryHandler.removeCallbacks(reconnect);
         state("Pairing erased from this device");
@@ -343,7 +353,21 @@ public final class MainActivity extends Activity {
         String url = SecureConfig.endpoint(this);
         worker.execute(() -> {
             try {
-                List<String> available = GatewayClient.models(url, SecureConfig.token(this));
+                boolean v2 = V2GatewayClient.enabled(url);
+                String token = SecureConfig.token(this);
+                List<String> available = v2 ? V2GatewayClient.models(url, token)
+                        : GatewayClient.models(url, token);
+                String restoredSession = "";
+                JSONArray restoredHistory = null;
+                if (v2) {
+                    List<String> ids = V2GatewayClient.sessions(url, token);
+                    String preferred = SecureConfig.v2SessionId(this);
+                    restoredSession = ids.contains(preferred) ? preferred
+                            : (ids.isEmpty() ? V2GatewayClient.createSession(url,token) : ids.get(0));
+                    restoredHistory = V2GatewayClient.history(url,token,restoredSession);
+                }
+                final String sessionReady = restoredSession;
+                final JSONArray recovered = restoredHistory;
                 if (available.isEmpty()) throw new IllegalStateException("No models");
                 runOnUiThread(() -> {
                     ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
@@ -361,11 +385,19 @@ public final class MainActivity extends Activity {
                     models.setAdapter(adapter);
                     int matching = ModelPreference.choose(available, previous);
                     if (matching >= 0) models.setSelection(matching);
+                    usingV2 = v2;
+                    if (v2) {
+                        v2SessionId = sessionReady;
+                        SecureConfig.setV2SessionId(this, sessionReady);
+                        renderV2History(recovered);
+                    }
+                    v2NewChat.setVisibility(v2 ? View.VISIBLE : View.GONE);
                     busy = false;
                     connected = true;
                     reconnectAttempts = 0;
                     retryHandler.removeCallbacks(reconnect);
-                    state(available.size() + " models available");
+                    state(available.size() + (v2 ? " secured V2 models; history restored"
+                            : " legacy models available"));
                 });
             } catch (Exception e) {
                 boolean unauthorized = ConnectionPolicy.requiresPairing(e.getMessage());
@@ -380,6 +412,46 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void renderV2History(JSONArray turns) {
+        transcript.removeAllViews();
+        history.clear();
+        for (int i=0; i<turns.length(); i++) {
+            try {
+                JSONObject turn = turns.getJSONObject(i);
+                append("YOU", turn.getString("user"));
+                append("VERA - " + turn.getString("model"), turn.getString("assistant"));
+            } catch (Exception e) {
+                transcript.removeAllViews();
+                append("SYSTEM", "Private history could not be reconstructed");
+                throw new IllegalStateException("Unusable V2 history",e);
+            }
+        }
+        if (turns.length()==0) append("VERA", "New encrypted conversation, authorized by this device.");
+    }
+
+    private void newSecureChat() {
+        if (!connected || busy || !usingV2) return;
+        busy = true;
+        state("Creating owner-scoped private conversation...");
+        String url = SecureConfig.endpoint(this);
+        worker.execute(() -> {
+            try {
+                String id=V2GatewayClient.createSession(url,SecureConfig.token(this));
+                runOnUiThread(() -> {
+                    v2SessionId=id;
+                    SecureConfig.setV2SessionId(this,id);
+                    transcript.removeAllViews();
+                    history.clear();
+                    append("VERA","New private conversation opened");
+                    busy=false;
+                    state("New V2 conversation ready");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> { busy=false; state("V2 session creation refused"); });
+            }
+        });
+    }
+
     private void send() {
         if (!connected || busy || models.getSelectedItem() == null) return;
         String prompt = input.getText().toString().trim();
@@ -388,6 +460,10 @@ public final class MainActivity extends Activity {
             return;
         }
         String selected = models.getSelectedItem().toString();
+        if (usingV2 && (v2SessionId == null || v2SessionId.isEmpty())) {
+            state("V2 session must be recovered before sending");
+            return;
+        }
         JSONArray messages = new JSONArray();
         try {
             for (int i = Math.max(0, history.size() - 10); i < history.size(); i++)
@@ -402,8 +478,11 @@ public final class MainActivity extends Activity {
         final String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
         worker.execute(() -> {
             try {
-                String reply = GatewayClient.chat(url, SecureConfig.token(this), selected, messages,
-                        SecureConfig.sessionId(this), requestId);
+                String token = SecureConfig.token(this);
+                String reply = usingV2
+                        ? V2GatewayClient.chat(url,token,selected,v2SessionId,requestId,prompt)
+                        : GatewayClient.chat(url,token,selected,messages,
+                            SecureConfig.sessionId(this),requestId);
                 runOnUiThread(() -> {
                     try {
                         history.add(new JSONObject().put("role", "user").put("content", prompt));
@@ -423,8 +502,11 @@ public final class MainActivity extends Activity {
                         retryHandler.removeCallbacks(reconnect);
                     }
                     if (input.getText().toString().isEmpty()) input.setText(prompt);
-                    append("SYSTEM", "Message not delivered. Your draft is restored.");
+                    append("SYSTEM", usingV2
+                            ? "Delivery uncertain. Draft restored; check encrypted history before retry."
+                            : "Message not delivered. Your draft is restored.");
                     state(authenticationLost ? "Pairing rejected; reconnect to retry."
+                            : usingV2 ? "V2 response uncertain; reconnect to inspect saved history."
                             : "Message not delivered; retry when ready.");
                 });
             }

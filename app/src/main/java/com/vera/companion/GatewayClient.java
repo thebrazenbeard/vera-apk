@@ -15,8 +15,8 @@ import javax.net.ssl.HttpsURLConnection;
 public final class GatewayClient {
     private GatewayClient() {}
 
-    private static JSONObject request(String base, String token, String path, JSONObject body)
-            throws Exception {
+    static JSONObject request(String base, String token, String path, JSONObject body,
+                              int expectedStatus) throws Exception {
         String endpoint = EndpointPolicy.normalize(base);
         if (token == null || !token.matches("[A-Za-z0-9_-]{32,128}")) {
             throw new IllegalArgumentException("Pairing token required");
@@ -40,7 +40,7 @@ public final class GatewayClient {
                 try (OutputStream out = connection.getOutputStream()) { out.write(payload); }
             }
             int status = connection.getResponseCode();
-            if (status != 200) throw new IllegalStateException("Gateway returned HTTP " + status);
+            if (status != expectedStatus) throw new IllegalStateException("Gateway returned HTTP " + status);
             String type = connection.getContentType();
             if (type == null || !type.toLowerCase(java.util.Locale.ROOT).startsWith("application/json"))
                 throw new IllegalStateException("Gateway returned unexpected content type");
@@ -56,6 +56,11 @@ public final class GatewayClient {
         } finally {
             connection.disconnect();
         }
+    }
+
+    static JSONObject request(String base, String token, String path, JSONObject body)
+            throws Exception {
+        return request(base, token, path, body, 200);
     }
 
     public static List<String> models(String base, String token) throws Exception {
