@@ -106,6 +106,38 @@ class DeviceGatewayTests(unittest.TestCase):
             self.assertEqual(model.call_count,1)
         self.assertEqual(len(self.store.history(self.phone["token"],sid)),1)
 
+    def test_inflight_duplicate_is_rejected_before_model_execution(self):
+        sid = self.store.create_session(self.pc["token"])
+        request = {"session_id":sid,"request_id":"request_inflight_1234567890",
+                   "model":"vera-local:latest","content":"slow synthetic"}
+        entered = threading.Event()
+        release = threading.Event()
+        responses = []
+
+        def slow_model(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("synthetic inference blocked")
+            return {"message":{"content":"READY"}}
+
+        def first():
+            responses.append(self.call("POST","/v2/chat",self.pc["token"],request))
+
+        with patch("device_gateway_v2.models",return_value=["vera-local:latest"]), \
+             patch("device_gateway_v2.ollama",side_effect=slow_model) as model:
+            thread = threading.Thread(target=first)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(self.call("POST","/v2/chat",self.pc["token"],request)[0],409)
+            finally:
+                release.set()
+                thread.join(timeout=5)
+            self.assertEqual(responses[0][0],200)
+            self.assertEqual(model.call_count,1)
+            self.assertEqual(self.call("POST","/v2/chat",self.pc["token"],request)[1]["replayed"],True)
+            self.assertEqual(model.call_count,1)
+
     def test_browser_preflight_and_nonexistent_route(self):
         self.assertEqual(self.call("OPTIONS","/v2/chat")[0],403)
         self.assertEqual(self.call("GET","/v2/private/keys",self.pc["token"])[0],404)
