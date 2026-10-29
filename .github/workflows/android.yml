@@ -23,7 +23,18 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.6.0"
-      - name: Test inference gateway (stdlib-only)
+      - name: Checkout reviewed STM journal implementation
+        uses: actions/checkout@v7
+        with:
+          repository: thebrazenbeard/stm
+          ref: 03d8f3e555e66da76d93d46ddea3bdcfa465c01c
+          path: external-stm
+      - name: Install encrypted STM test dependency
+        run: python3 -m pip install cryptography==48.0.1
+      - name: Test inference gateway and V2 device authorization
+        env:
+          PYTHONPATH: gateway:external-stm
+          VERA_STM_SOURCE: external-stm
         run: python3 -m unittest discover -s gateway/tests -v
       - name: Run Android unit tests
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
