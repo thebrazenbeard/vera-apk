@@ -46,6 +46,7 @@ public final class SecureConfig {
                 .putString("url", normalized)
                 .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
                 .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .remove("v2_session_id")
                 .putBoolean("connection_wanted", false).apply();
     }
 
@@ -73,6 +74,19 @@ public final class SecureConfig {
     public static void setConnectionWanted(Context context, boolean wanted) {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putBoolean("connection_wanted", wanted).apply();
+    }
+
+    /** UI rejoin hint only; the V2 server authorizes every retrieval by device bearer. */
+    public static String v2SessionId(Context context) {
+        return context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getString("v2_session_id", "");
+    }
+
+    public static void setV2SessionId(Context context, String session) {
+        if (session == null || !session.matches("[A-Za-z0-9_-]{16,128}"))
+            throw new IllegalArgumentException("Invalid server session ID");
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+                .putString("v2_session_id", session).commit();
     }
 
     /** Stable pseudonymous device-session identifier, regenerated on UNPAIR. */

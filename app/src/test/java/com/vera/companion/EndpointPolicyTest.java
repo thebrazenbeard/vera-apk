@@ -8,6 +8,11 @@ public final class EndpointPolicyTest {
         assertEquals("https://lappy.tail86ea75.ts.net:8443",
                 EndpointPolicy.normalize(" https://LAPPY.tail86ea75.ts.net:8443/ "));
     }
+    @Test public void v2UsesSeparateExplicitTailnetPort() {
+        assertTrue(EndpointPolicy.isV2("https://lappy.tail86ea75.ts.net:8444"));
+        assertFalse(EndpointPolicy.isV2("https://lappy.tail86ea75.ts.net:8443"));
+        assertFalse(EndpointPolicy.isV2("https://lappy.tail86ea75.ts.net"));
+    }
     @Test public void refusesHttp() { reject("http://lappy.tail86ea75.ts.net:8443"); }
     @Test public void refusesIp() { reject("https://100.88.50.35:8443"); }
     @Test public void refusesPublicHost() { reject("https://example.com"); }
