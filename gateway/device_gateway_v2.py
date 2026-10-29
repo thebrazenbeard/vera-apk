@@ -27,7 +27,20 @@ class DeviceServer(ThreadingHTTPServer):
     def __init__(self, address, store, handler=None):
         self.store = store
         self.slots = threading.BoundedSemaphore(6)
+        self._inflight = set()
+        self._inflight_lock = threading.Lock()
         super().__init__(address, handler or DeviceHandler)
+
+    def claim_request(self, request_id):
+        with self._inflight_lock:
+            if request_id in self._inflight:
+                return False
+            self._inflight.add(request_id)
+            return True
+
+    def release_request(self, request_id):
+        with self._inflight_lock:
+            self._inflight.discard(request_id)
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -135,20 +148,34 @@ class DeviceHandler(BaseHTTPRequestHandler):
                 raise InvalidRequest("invalid prompt")
             if type(request_id) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}",request_id):
                 raise InvalidRequest("invalid request ID")
-            previous = self.server.store.history(token,session,limit=8,max_bytes=14000)
-            messages = []
-            for turn in previous:
-                messages.extend(({"role":"user","content":turn["user"]},
-                                 {"role":"assistant","content":turn["assistant"]}))
-            messages.append({"role":"user","content":content})
-            result = ollama("/api/chat",{"model":model,"messages":messages,"stream":False,
-                                        "options":{"num_predict":256}},timeout=90)
-            reply = result.get("message",{}).get("content")
-            if type(reply) is not str or not 1 <= len(reply) <= 16000:
-                raise ValueError("invalid response")
-            # Recheck the token/session under the storage lock for revocation.
-            self.server.store.append(token,session,request_id,model,content,reply)
-            return self.response(200, {"reply":reply,"model":model,"node":"local","mode":"response_only"})
+            if not self.server.claim_request(request_id):
+                return self.response(409, {"error":"request already in progress"})
+            try:
+                recorded = self.server.store.lookup(token,session,request_id)
+                if recorded is not None:
+                    if recorded["user"] != content or recorded["model"] != model:
+                        return self.response(409, {"error":"request ID reuse conflicts"})
+                    return self.response(200, {
+                        "reply":recorded["assistant"],"model":model,
+                        "node":"local","mode":"response_only","replayed":True})
+                previous = self.server.store.history(token,session,limit=8,max_bytes=14000)
+                messages = []
+                for turn in previous:
+                    messages.extend(({"role":"user","content":turn["user"]},
+                                     {"role":"assistant","content":turn["assistant"]}))
+                messages.append({"role":"user","content":content})
+                result = ollama("/api/chat",{"model":model,"messages":messages,"stream":False,
+                                            "options":{"num_predict":256}},timeout=90)
+                reply = result.get("message",{}).get("content")
+                if type(reply) is not str or not 1 <= len(reply) <= 16000:
+                    raise ValueError("invalid response")
+                # Recheck the token/session under the storage lock for revocation.
+                self.server.store.append(token,session,request_id,model,content,reply)
+                return self.response(200, {
+                    "reply":reply,"model":model,"node":"local","mode":"response_only",
+                    "replayed":False})
+            finally:
+                self.server.release_request(request_id)
         except AccessDenied:
             return self.response(403, {"error":"forbidden"})
         except (InvalidRequest, ValueError, UnicodeError, TypeError, AttributeError):

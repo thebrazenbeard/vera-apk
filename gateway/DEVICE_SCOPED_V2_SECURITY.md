@@ -30,7 +30,7 @@ Serve route, Funnel, port-forward or external listener.
   existing encrypted STM `EncryptedJournal` implementation. There is
   no arbitrary file access, agent tool execution or history dump endpoint.
 - Source integration uses exact STM journal commit
-  `03d8f3e555e66da76d93d46ddea3bdcfa465c01c` in CI.
+  `64e95a2478447b07c42b85e3300bef6cd7b6296e` in CI.
   Old 0.2.3 phone sessions are **not** retrospectively added as
   V2-owned sessions, because there is no attested proof they belong to
   a particular owner.

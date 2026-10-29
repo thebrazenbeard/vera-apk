@@ -89,6 +89,23 @@ class DeviceGatewayTests(unittest.TestCase):
             self.assertEqual(status,400)
             model.assert_not_called()
 
+    def test_request_replay_does_not_repeat_model_work(self):
+        sid = self.store.create_session(self.pc["token"])
+        payload = {"session_id":sid,"request_id":"request_replay1234567890123",
+                   "model":"vera-local:latest","content":"once only"}
+        with patch("device_gateway_v2.models",return_value=["vera-local:latest"]), \
+             patch("device_gateway_v2.ollama",return_value={"message":{"content":"READY"}}) as model:
+            first = self.call("POST","/v2/chat",self.pc["token"],payload)
+            second = self.call("POST","/v2/chat",self.pc["token"],payload)
+            self.assertEqual((first[0],second[0]),(200,200))
+            self.assertEqual(second[1]["reply"],"READY")
+            self.assertTrue(second[1]["replayed"])
+            self.assertEqual(model.call_count,1)
+            altered=dict(payload,content="different text")
+            self.assertEqual(self.call("POST","/v2/chat",self.pc["token"],altered)[0],409)
+            self.assertEqual(model.call_count,1)
+        self.assertEqual(len(self.store.history(self.phone["token"],sid)),1)
+
     def test_browser_preflight_and_nonexistent_route(self):
         self.assertEqual(self.call("OPTIONS","/v2/chat")[0],403)
         self.assertEqual(self.call("GET","/v2/private/keys",self.pc["token"])[0],404)

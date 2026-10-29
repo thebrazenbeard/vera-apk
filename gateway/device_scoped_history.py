@@ -142,6 +142,17 @@ class DeviceScopedHistory:
             # cannot interleave with this read in the same process.
             return self.journal.recent(session_id,limit=limit,max_bytes=max_bytes)
 
+    def lookup(self, token, session_id, request_id):
+        """Return a previously completed authorized request without re-inference."""
+        if type(request_id) is not str or not _ID.fullmatch(request_id):
+            raise InvalidRequest("invalid request identifier")
+        with self._lock, closing(self._db()) as db:
+            self._authorized(db, token, session_id)
+            try:
+                return self.journal.get_request(session_id, request_id)
+            except ValueError as exc:
+                raise InvalidRequest("request replay conflicts with archived data") from exc
+
     def append(self, token, session_id, request_id, model, user, assistant):
         if type(request_id) is not str or not _ID.fullmatch(request_id):
             raise InvalidRequest("invalid idempotency identifier")

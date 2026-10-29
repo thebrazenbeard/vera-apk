@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: thebrazenbeard/stm
-          ref: 03d8f3e555e66da76d93d46ddea3bdcfa465c01c
+          ref: 64e95a2478447b07c42b85e3300bef6cd7b6296e
           path: external-stm
       - name: Install encrypted STM test dependency
         run: python3 -m pip install cryptography==48.0.1
