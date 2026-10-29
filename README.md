@@ -43,6 +43,13 @@ gradle :app:assembleDebug
 
 No production endpoint, credential, signing key, or Vera runtime route is stored in this repository.
 
+## STM and cross-device memory status (2026-10-28)
+
+The selected Vera STM lifecycle is **day-30 historical-review eligibility and day-45 local source expiry** for new, explicitly consented archived conversation turns. This Android client does **not** capture or archive user conversations automatically and does not own canonical memory.
+
+The STM library's optional Android/Linux local AF_UNIX adapter can verify a same-device kernel UID only when a trusted Android PackageManager resolver checks the current full package set, signing certificate and Android user profile. That local check is **not** identity proof for a phone talking to a Windows PC over Wi-Fi, Tailscale or other transport. No cross-device pairing, authorized private-memory channel, account binding or live Vera conversation ingestion is established here. The Android app remains `NO_AUTO_BIND`.
+
+Future cross-device memory requires user-visible pairing and revocation, mutual device authentication, TLS-protected transport, an independently verified owner binding, explicit consent and category-scoped authorization. Private-history transfer to DeepMemoryStorage needs a separate reviewed write contract; it must not target the public Git repository.
 ## Integration rule
 
 The canonical Vera portfolio currently classifies this repository as `NO_AUTO_BIND`. Populating source does not change that. Runtime binding requires a separate reviewed transport contract, current endpoint evidence, authentication design, effect-authorization semantics, and behavioral qualification.
