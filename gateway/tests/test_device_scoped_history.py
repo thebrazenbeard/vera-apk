@@ -70,6 +70,89 @@ class ScopedHistoryTest(unittest.TestCase):
             self.store.append(self.pc["token"], sid, "req_" + "c"*30, "vera-local:latest", "hi", "hello")
         self.assertEqual(self.store.history(self.phone["token"], sid), [])
 
+    def test_concurrent_external_revocation_waits_for_authorized_append(self):
+        """Two store instances must serialize revoke with a pending journal write."""
+        sid = self.store.create_session(self.pc["token"])
+        external = DeviceScopedHistory(
+            self.store.access_db,
+            EncryptedJournal(self.store.journal_db, self.store.key_file),
+        )
+        append_entered = threading.Event()
+        release_append = threading.Event()
+        revoke_attempted = threading.Event()
+        revoke_done = threading.Event()
+        failures = []
+        original_append = self.store.journal.append_turn
+
+        def pause_before_journal_commit(*args):
+            append_entered.set()
+            if not release_append.wait(5):
+                raise RuntimeError("timed out waiting for test release")
+            return original_append(*args)
+
+        def append_worker():
+            try:
+                self.store.append(self.pc["token"], sid, "req_" + "z" * 30,
+                                  "vera-local:latest", "question", "answer")
+            except Exception as exc:
+                failures.append(exc)
+
+        def revoke_worker():
+            try:
+                revoke_attempted.set()
+                external.revoke(self.pc["device_id"])
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                revoke_done.set()
+
+        with patch.object(self.store.journal, "append_turn", pause_before_journal_commit):
+            appender = threading.Thread(target=append_worker)
+            revoker = threading.Thread(target=revoke_worker)
+            try:
+                appender.start()
+                self.assertTrue(append_entered.wait(3))
+                revoker.start()
+                self.assertTrue(revoke_attempted.wait(3))
+                self.assertFalse(revoke_done.wait(0.2),
+                                 "revocation committed while an authenticated append was pending")
+            finally:
+                release_append.set()
+                appender.join(6)
+                if revoker.ident is not None:
+                    revoker.join(6)
+
+        self.assertFalse(appender.is_alive())
+        self.assertFalse(revoker.is_alive())
+        self.assertFalse(failures, failures)
+        self.assertTrue(revoke_done.is_set())
+        self.assertEqual(len(self.store.history(self.phone["token"], sid)), 1)
+        with self.assertRaises(AccessDenied):
+            self.store.append(self.pc["token"], sid, "req_" + "y" * 30,
+                              "vera-local:latest", "later", "blocked")
+
+    def test_failed_journal_append_releases_external_revocation_lock(self):
+        sid = self.store.create_session(self.pc["token"])
+        external = DeviceScopedHistory(
+            self.store.access_db,
+            EncryptedJournal(self.store.journal_db, self.store.key_file),
+        )
+        for exc, expected, request_suffix in (
+            (ValueError("synthetic journal conflict"), InvalidRequest, "f"),
+            (RuntimeError("synthetic storage failure"), RuntimeError, "h"),
+        ):
+            with self.subTest(failure=type(exc).__name__):
+                with patch.object(self.store.journal, "append_turn", side_effect=exc):
+                    with self.assertRaises(expected):
+                        self.store.append(self.pc["token"], sid, "req_" + request_suffix * 30,
+                                          "vera-local:latest", "question", "answer")
+        # Closing the failed transaction must free SQLite's cross-process writer lock.
+        self.assertEqual(external.revoke(self.pc["device_id"]), 1)
+        self.assertEqual(self.store.history(self.phone["token"], sid), [])
+        with self.assertRaises(AccessDenied):
+            self.store.append(self.pc["token"], sid, "req_" + "g" * 30,
+                              "vera-local:latest", "later", "blocked")
+
     def test_duplicate_request_and_replay_conflict(self):
         sid = self.store.create_session(self.pc["token"])
         req = "req_" + "d"*30
