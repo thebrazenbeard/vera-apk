@@ -156,10 +156,16 @@ class DeviceScopedHistory:
     def append(self, token, session_id, request_id, model, user, assistant):
         if type(request_id) is not str or not _ID.fullmatch(request_id):
             raise InvalidRequest("invalid idempotency identifier")
-        with self._lock, closing(self._db()) as db:
+        with self._lock, closing(self._db()) as db, db:
+            # Serialize authorization and encrypted append against an admin
+            # revoking the credential in *another* process.  A Python RLock
+            # only protects users of this particular store instance.
+            db.execute("BEGIN IMMEDIATE")
             self._authorized(db,token,session_id)
             try:
-                return self.journal.append_turn(session_id,request_id,model,user,assistant)
+                sequence = self.journal.append_turn(session_id,request_id,model,user,assistant)
+                db.commit()
+                return sequence
             except ValueError as exc:
                 raise InvalidRequest("invalid or conflicting journal turn") from exc
 
