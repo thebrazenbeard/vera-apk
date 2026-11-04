@@ -4,6 +4,10 @@
 optional backend is based on APK PR #10's authenticated phone gateway and
 `thebrazenbeard/v-e-r-a` PR #24's loopback OpenAI-compatible GGUF bridge.
 Neither draft is merged into its repository's `main` here.
+This is a **V1 gateway** adapter only; independent V2 owner-scoped session,
+revocation and STM work in stacked APK PRs #12/#14/#15 is not included,
+qualified or superseded by this branch. No V2 credential downgrade or
+automatic migration is offered.
 
 The existing Android app still talks ONLY to its authenticated, owner-paired
 Tailscale Serve HTTPS gateway, with `/v1/models` and `/v1/chat` responses and
@@ -49,9 +53,19 @@ and recovery require independent host evidence.
 - The downstream bridge request uses exact fields `model`, `messages`,
   `stream:false`, `max_tokens:256`. Responses must contain one matching model,
   one assistant text choice and no extensions, function calls or tool calls.
+- When encrypted STM is opted in, only six prior user/assistant pairs are
+  recalled for this backend, plus the current user question: at most **13**
+  messages. The legacy Ollama path retains its eight-pair replay. Aggregate
+  bridge text is also bounded to 20,000 characters; this prevents a session
+  from failing indefinitely after its seventh saved exchange.
 - Any protocol, identity, health, content, size, redirect or deadline failure
   returns 503 and never fabricates a successful model reply. The gateway
   remains `response_only`, not canonical Vera identity or memory authority.
+- Every bridge HTTP call uses a monotonic **aggregate** deadline, including
+  response-header and response-byte trickles. A timer forcibly shuts down its
+  retained socket handle to release workers; six concurrent slow-upstream
+  negative probes recover all gateway slots. The bounded policy is not a
+  guarantee of upstream model cancellation after the request disconnects.
 - The existing optional encrypted STM journal's owner/session/consent rules
   are unchanged; no new automatic knowledge or training input ingestion.
 
@@ -60,7 +74,9 @@ and recovery require independent host evidence.
 `gateway/tests/test_vera_bridge_backend.py` exercises two real loopback HTTP
 servers with a deterministic mock bridge, including authenticated roundtrip,
 no-auth rejection, swapped model, tool-effect forgery, unexpected extensions,
-redirect refusal, bad UTF-8 and unavailable upstream. This is a **source-only
+redirect refusal, bad UTF-8, an eight-turn STM replay case, and unavailable
+upstream. Slow response headers/body and six concurrent drips are also tested
+against total deadlines and worker recovery. This is a **source-only
 mock contract**, not live Qwen inference, an Android APK build, physical
 phone deployment, Tailscale pairing validation, or training evidence.
 

@@ -1,10 +1,12 @@
 """Offline contract tests for explicit Vera GGUF bridge upstream selection."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -22,6 +24,8 @@ class FakeVeraBridge(BaseHTTPRequestHandler):
     redirect = False
     extra_response = False
     invalid_utf8_text = False
+    slow_body = False
+    slow_headers = False
     received = []
 
     def log_message(self, *_args):
@@ -35,10 +39,29 @@ class FakeVeraBridge(BaseHTTPRequestHandler):
             self.send_header("Location", location)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(raw)
+        if self.slow_body:
+            for byte in raw:
+                try:
+                    self.wfile.write(bytes((byte,)))
+                    self.wfile.flush()
+                except OSError:
+                    break
+                time.sleep(.04)
+        else:
+            self.wfile.write(raw)
 
     def do_GET(self):
         if self.path == "/health":
+            if self.slow_headers:
+                raw = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                       b"Content-Length: 39\r\n\r\n")
+                for byte in raw:
+                    try:
+                        self.connection.sendall(bytes((byte,)))
+                    except OSError:
+                        break
+                    time.sleep(.04)
+                return
             return self.reply(200, {"status": "ok" if self.ready else "unavailable",
                                     "effect_authority": False})
         if self.path == "/api/tags":
@@ -52,6 +75,8 @@ class FakeVeraBridge(BaseHTTPRequestHandler):
             return self.reply(307, {}, location="http://127.0.0.1:1/invalid")
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.received.append(payload)
+        if len(payload.get("messages", [])) > 13:
+            return self.reply(400, {"error": "invalid message count"})
         message = {"role": "assistant", "content": "A bounded reply"}
         if self.tool_response:
             message["tool_calls"] = [{"id": "t", "type": "function"}]
@@ -70,7 +95,8 @@ class BridgeContractTests(unittest.TestCase):
     def setUp(self):
         for flag, value in (("ready", True), ("tool_response", False),
                             ("changed_model", False), ("redirect", False),
-                            ("extra_response", False), ("invalid_utf8_text", False)):
+                            ("extra_response", False), ("invalid_utf8_text", False),
+                            ("slow_body", False), ("slow_headers", False)):
             setattr(FakeVeraBridge, flag, value)
         FakeVeraBridge.received = []
         self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), FakeVeraBridge)
@@ -141,6 +167,33 @@ class BridgeContractTests(unittest.TestCase):
         FakeVeraBridge.model_id = "wrong-model"
         self.assertEqual(self.call("/v1/models", "t" * 48)[0], 503)
 
+    def test_dripping_bridge_cannot_exceed_aggregate_deadline(self):
+        for mode in ("slow_body", "slow_headers"):
+            with self.subTest(mode=mode):
+                setattr(FakeVeraBridge, mode, True)
+                start = time.monotonic()
+                with self.assertRaises((TimeoutError, OSError, ValueError)):
+                    self.backend._json("/health", timeout=.2, max_bytes=4096)
+                self.assertLess(time.monotonic() - start, 1.0)
+                setattr(FakeVeraBridge, mode, False)
+
+    def test_six_concurrent_drips_release_gateway_slots(self):
+        FakeVeraBridge.slow_body = True
+        original = self.backend._json
+
+        def short_deadline(path, data=None, *, timeout, max_bytes):
+            return original(path, data, timeout=.25, max_bytes=max_bytes)
+
+        start = time.monotonic()
+        with patch.object(self.backend, "_json", side_effect=short_deadline):
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                responses = list(executor.map(
+                    lambda _: self.call("/v1/models", "t" * 48), range(6)))
+        self.assertTrue(all(status == 503 for status, _ in responses))
+        self.assertLess(time.monotonic() - start, 2.0)
+        FakeVeraBridge.slow_body = False
+        self.assertEqual(self.call("/v1/models", "t" * 48)[0], 200)
+
     def test_bridge_scope_rejects_invalid_ports_and_model_ids(self):
         for bad in (0, -1, 65536, 1.25, True, "1234"):
             with self.subTest(port=bad), self.assertRaises(ValueError):
@@ -148,6 +201,34 @@ class BridgeContractTests(unittest.TestCase):
         for bad in ("", " model", "model ", "X" * 129, 123):
             with self.subTest(model=bad), self.assertRaises(ValueError):
                 gateway.VeraBridgeBackend(11439, bad)
+
+    def test_eight_saved_stm_turns_trim_to_bridge_thirteen_message_limit(self):
+        """The phone journal's 8-turn default would send 17 messages to a 13-cap bridge."""
+        class Journal:
+            selected_limit = None
+            writes = []
+
+            def recent(self, session_id, *, limit, max_bytes):
+                self.selected_limit = limit
+                self.max_bytes = max_bytes
+                return [{"user": f"history user {n}",
+                         "assistant": f"history reply {n}"} for n in range(8)][-limit:]
+
+            def append_turn(self, session_id, request_id, model, prompt, reply):
+                self.writes.append((session_id, request_id, model, prompt, reply))
+
+        journal = Journal()
+        self.server.journal = journal
+        chat = {"model": FakeVeraBridge.model_id,
+                "messages": [{"role": "user", "content": "newest question"}],
+                "session_id": "s" * 16, "request_id": "r" * 16}
+        status, response = self.call("/v1/chat", "t" * 48, chat)
+        self.assertEqual((status, response.get("reply")), (200, "A bounded reply"))
+        self.assertEqual(journal.selected_limit, 6)
+        self.assertEqual(len(FakeVeraBridge.received[-1]["messages"]), 13)
+        self.assertEqual(FakeVeraBridge.received[-1]["messages"][-1],
+                         {"role": "user", "content": "newest question"})
+        self.assertEqual(len(journal.writes), 1)
 
 
 if __name__ == "__main__":

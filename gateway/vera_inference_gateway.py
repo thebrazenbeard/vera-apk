@@ -5,6 +5,7 @@ Bind ONLY to loopback. Publish through authenticated Tailscale Serve HTTPS,
 never via a router port-forward or public Tailscale Funnel.
 """
 import argparse
+import http.client
 import hmac
 import sys
 import json
@@ -13,20 +14,13 @@ from pathlib import Path
 import re
 import socket
 import threading
-from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
+import time
+from urllib.request import Request, build_opener, ProxyHandler
 
 MAX_BODY = 32768
 MAX_REPLY = 16000
 OLLAMA_ROOT = "http://127.0.0.1:11434"
 OPENER = build_opener(ProxyHandler({}))
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
-        return None
-
-
-_BRIDGE_OPENER = build_opener(ProxyHandler({}), _NoRedirect())
 
 
 def strict_json(raw):
@@ -83,6 +77,8 @@ class VeraBridgeBackend:
         if (type(model_id) is not str or not 0 < len(model_id) <= 128
                 or model_id != model_id.strip() or any(ord(c) < 32 for c in model_id)):
             raise ValueError("exact bridge model ID required")
+        model_id.encode("utf-8")
+        self.port = port
         self.root = f"http://127.0.0.1:{port}"
         self.model_id = model_id
 
@@ -90,13 +86,49 @@ class VeraBridgeBackend:
         if path not in ("/health", "/api/tags", "/v1/chat/completions"):
             raise ValueError("unsupported bridge operation")
         raw = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
-        request = Request(self.root + path, data=raw, method="POST" if raw else "GET",
-                          headers={"Accept": "application/json", "Content-Type": "application/json"})
-        with _BRIDGE_OPENER.open(request, timeout=timeout) as response:
-            if response.status != 200 or (response.headers.get_content_type()
-                                          != "application/json"):
+        deadline = time.monotonic() + timeout
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        expired = threading.Event()
+        guard_socket = None
+
+        def abort():
+            expired.set()
+            # With Connection: close, getresponse() may detach connection.sock
+            # while HTTPResponse still owns the readable socket. Retain a dup.
+            active = guard_socket or connection.sock
+            if active is not None:
+                try:
+                    active.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        timer = threading.Timer(timeout, abort)
+        timer.daemon = True
+        timer.start()
+        try:
+            connection.request("POST" if raw is not None else "GET", path,
+                               body=raw, headers={"Accept": "application/json",
+                                                  "Content-Type": "application/json",
+                                                  "Connection": "close"})
+            if connection.sock is not None:
+                guard_socket = connection.sock.dup()
+            response = connection.getresponse()
+            if (response.status != 200
+                    or response.getheader("Content-Type", "").split(";", 1)[0].strip()
+                    != "application/json"):
                 raise ValueError("invalid bridge response status/type")
             content = response.read(max_bytes + 1)
+            if expired.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("bridge aggregate request deadline exceeded")
+        except (OSError, http.client.HTTPException) as exc:
+            if expired.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("bridge aggregate request deadline exceeded") from exc
+            raise
+        finally:
+            timer.cancel()
+            connection.close()
+            if guard_socket is not None:
+                guard_socket.close()
         if len(content) > max_bytes:
             raise ValueError("bridge response too large")
         return strict_json(content)
@@ -121,7 +153,7 @@ class VeraBridgeBackend:
             raise ValueError("bridge model changed")
         result = self._json("/v1/chat/completions", {
             "model": model, "messages": messages, "stream": False, "max_tokens": 256,
-        }, timeout=80, max_bytes=65536)
+        }, timeout=70, max_bytes=65536)
         if (type(result) is not dict or set(result) != {"model", "choices"}
                 or result["model"] != model or type(result["choices"]) is not list
                 or len(result["choices"]) != 1):
@@ -257,12 +289,20 @@ class Handler(BaseHTTPRequestHandler):
             session_id = payload.get("session_id")
             request_id = payload.get("request_id")
             if self.server.journal is not None and session_id is not None:
-                prior = self.server.journal.recent(session_id, limit=8, max_bytes=14000)
+                # v-e-r-a's guarded bridge accepts at most 13 messages:
+                # six history pairs plus the current user turn. Preserve the
+                # eight-turn legacy Ollama behavior when that backend is used.
+                history_limit = 6 if self.server.backend is not None else 8
+                prior = self.server.journal.recent(
+                    session_id, limit=history_limit, max_bytes=14000)
                 messages = []
                 for turn in prior:
                     messages.extend(({"role": "user", "content": turn["user"]},
                                      {"role": "assistant", "content": turn["assistant"]}))
                 messages.append({"role": "user", "content": payload["messages"][-1]["content"]})
+            if self.server.backend is not None and (
+                    len(messages) > 13 or sum(len(row["content"]) for row in messages) > 20000):
+                raise ValueError("bridge conversation exceeds text-only bounds")
             if self.server.backend:
                 answer = self.server.backend.chat(model, messages)
             else:
