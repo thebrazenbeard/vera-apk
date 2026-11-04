@@ -50,6 +50,15 @@ and recovery require independent host evidence.
 - Phone bearer authorization happens before contacting the model. Incoming
   messages still allow only bounded `user` and `assistant` text; no tools,
   system messages, model-switch directives or side-effect fields pass.
+- **Inherited V1 caveat:** The outer HTTPS phone gateway checks its bearer,
+  but does not independently enforce literal HTTP `Host` or `Origin` headers.
+  An authorized synthetic request with forged headers still receives a reply.
+  This is not a demonstrated browser CSRF (ordinary browsers cannot attach
+  the private bearer without preflight, and OPTIONS is rejected), but it is
+  not host-origin authentication. The *inner* v-e-r-a bridge independently
+  enforces its fixed 127.0.0.1 Host/Origin. A future V1/V2 security change
+  should bind the accepted public Host to the qualified owner HTTPS route
+  without breaking existing Tailscale Serve forwarding.
 - The downstream bridge request uses exact fields `model`, `messages`,
   `stream:false`, `max_tokens:256`. Responses must contain one matching model,
   one assistant text choice and no extensions, function calls or tool calls.
