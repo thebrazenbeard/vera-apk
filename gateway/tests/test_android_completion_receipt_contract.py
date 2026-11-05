@@ -31,6 +31,10 @@ class AndroidCompletionReceiptContract(unittest.TestCase):
         self.assertIn('completion.equals("length_limited")', activity)
         self.assertIn('completion.equals("filtered")', activity)
         self.assertIn('completion.equals("unknown")', activity)
+        self.assertIn('!delivered.personaConfigured', activity)
+        self.assertIn('!delivered.completionStatus.equals("not_reported")', activity)
+        self.assertIn('"LOCAL MODEL  •  " : "VERA  •  "', activity)
+        self.assertIn('" · Vera persona not configured"', activity)
         self.assertNotIn('X-Vera-Session', activity)
 
 

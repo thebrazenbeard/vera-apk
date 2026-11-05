@@ -446,10 +446,17 @@ public final class MainActivity extends Activity {
                         history.add(new JSONObject().put("role", "assistant")
                                 .put("content", delivered.text));
                     } catch (Exception ignored) { }
-                    append("VERA  •  " + selected, delivered.text);
+                    // A raw GGUF bridge can report generation completion but
+                    // does not install the canonical Vera conversation profile.
+                    // Legacy Ollama has no receipt: preserve its existing UI.
+                    boolean unconfiguredRawBridge = !delivered.personaConfigured
+                            && !delivered.completionStatus.equals("not_reported");
+                    append((unconfiguredRawBridge ? "LOCAL MODEL  •  " : "VERA  •  ")
+                            + selected, delivered.text);
                     busy = false;
                     String completion = delivered.completionStatus;
                     state("Serving model: " + selected
+                            + (unconfiguredRawBridge ? " · Vera persona not configured" : "")
                             + (completion.equals("length_limited") ? " · reply cut off"
                             : completion.equals("filtered") ? " · reply filtered"
                             : completion.equals("unknown") ? " · completion unverified" : ""));

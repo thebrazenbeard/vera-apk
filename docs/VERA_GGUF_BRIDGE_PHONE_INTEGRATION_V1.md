@@ -171,6 +171,10 @@ case; if a persona source *is* supplied, its SOURCE_ONLY/authority fields
 must still validate. Existing `VeraBridgeBackend.chat()` remains a text-only
 Python compatibility adapter. Legacy Ollama remains unchanged and continues
 to omit completion metadata; no fabricated `complete` status is supplied.
+Android labels a typed raw-bridge reply **LOCAL MODEL** with a visible
+`Vera persona not configured` status. Legacy Ollama's preexisting display is
+unchanged when no completion receipt exists; no identity is inferred from
+that older path either.
 
 **Live draft incompatibility found:** At exact `v-e-r-a` PR #24 head
 `22b7dbbff1b1407a7d8fdc604a5182da8f7c10dc`, `/api/status` offers only
