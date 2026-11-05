@@ -40,6 +40,8 @@ public final class MainActivity extends Activity {
     private boolean connected, busy;
     private boolean foreground;
     private int reconnectAttempts;
+    // In-flight HTTP replies from an earlier pairing must not enter the new chat UI.
+    private volatile int pairingGeneration;
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private final Runnable reconnect = () -> {
         if (foreground && !connected && !busy && SecureConfig.wantsConnection(this))
@@ -298,26 +300,43 @@ public final class MainActivity extends Activity {
         root.requestApplyInsets();
     }
 
+    private void clearDisplayedConversation() {
+        history.clear();
+        // Child 0 is the fixed introduction; the rest are conversational bubbles.
+        if (transcript != null && transcript.getChildCount() > 1)
+            transcript.removeViews(1, transcript.getChildCount() - 1);
+    }
+
     private void save() {
         try {
-            SecureConfig.save(this, endpoint.getText().toString(), secret.getText().toString().trim());
+            boolean newSession = SecureConfig.save(this, endpoint.getText().toString(),
+                    secret.getText().toString().trim());
             secret.setText("");
-            connected = false;
-            history.clear();
+            if (newSession) {
+                pairingGeneration++;
+                connected = false;
+                busy = false;
+                retryHandler.removeCallbacks(reconnect);
+                clearDisplayedConversation();
+            }
             connectionPanel.setVisibility(View.GONE);
             connectionToggle.setText("CONNECTION SETTINGS  ▾");
-            state("Saved securely. Tap CONNECT.");
+            state(newSession
+                    ? "Pairing changed. Fresh conversation; old gateway archives, if enabled, remain stored. Tap CONNECT."
+                    : "Pairing unchanged. Connection and conversation retained.");
         } catch (Exception e) { state("Invalid endpoint or token"); }
     }
 
     private void unpair() {
         SecureConfig.clear(this);
+        pairingGeneration++;
         endpoint.setText("");
         secret.setText("");
-        history.clear();
+        clearDisplayedConversation();
         connected = false;
+        busy = false;
         retryHandler.removeCallbacks(reconnect);
-        state("Pairing erased from this device");
+        state("Device pairing erased. Gateway history, if enabled, was not deleted.");
     }
 
     private void connect() {
@@ -341,11 +360,17 @@ public final class MainActivity extends Activity {
         connected = false;
         state("Checking local gateway...");
         String url = SecureConfig.endpoint(this);
+        final int generation = pairingGeneration;
+        final String pairingToken;
+        try { pairingToken = SecureConfig.token(this); }
+        catch (Exception e) { busy = false; state("Unable to read pairing token"); return; }
         worker.execute(() -> {
+            if (generation != pairingGeneration) return;
             try {
-                List<String> available = GatewayClient.models(url, SecureConfig.token(this));
+                List<String> available = GatewayClient.models(url, pairingToken);
                 if (available.isEmpty()) throw new IllegalStateException("No models");
                 runOnUiThread(() -> {
+                    if (generation != pairingGeneration) return;
                     ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
                             android.R.layout.simple_spinner_item, available) {
                         @Override public View getView(int position, View convertView, ViewGroup parent) {
@@ -370,6 +395,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 boolean unauthorized = ConnectionPolicy.requiresPairing(e.getMessage());
                 runOnUiThread(() -> {
+                    if (generation != pairingGeneration) return;
                     busy = false;
                     if (unauthorized) SecureConfig.setConnectionWanted(this, false);
                     state(unauthorized ? "Pairing rejected. Check your token."
@@ -395,16 +421,26 @@ public final class MainActivity extends Activity {
             messages.put(new JSONObject().put("role", "user").put("content", prompt));
         } catch (Exception e) { state("Invalid session"); return; }
         String url = SecureConfig.endpoint(this);
+        final int generation = pairingGeneration;
+        // Freeze endpoint, bearer and session as one request epoch. Re-pairing
+        // while a queued worker waits must not send old chat to a new journal.
+        final String pairingToken, pairingSession;
+        try {
+            pairingToken = SecureConfig.token(this);
+            pairingSession = SecureConfig.sessionId(this);
+        } catch (Exception e) { state("Unable to read pairing credential"); return; }
         busy = true;
         append("YOU", prompt);
         input.setText("");
         state("Message queued - Vera is generating on " + selected + "...");
         final String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
         worker.execute(() -> {
+            if (generation != pairingGeneration) return;
             try {
-                String reply = GatewayClient.chat(url, SecureConfig.token(this), selected, messages,
-                        SecureConfig.sessionId(this), requestId);
+                String reply = GatewayClient.chat(url, pairingToken, selected, messages,
+                        pairingSession, requestId);
                 runOnUiThread(() -> {
+                    if (generation != pairingGeneration) return;
                     try {
                         history.add(new JSONObject().put("role", "user").put("content", prompt));
                         history.add(new JSONObject().put("role", "assistant").put("content", reply));
@@ -416,6 +452,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 boolean authenticationLost = ConnectionPolicy.requiresPairing(e.getMessage());
                 runOnUiThread(() -> {
+                    if (generation != pairingGeneration) return;
                     busy = false;
                     if (authenticationLost) {
                         connected = false;

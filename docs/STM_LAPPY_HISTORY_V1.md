@@ -38,6 +38,32 @@ sessions. The archive is raw **untrusted** conversational evidence, not an
 automatic source of verified facts, long-term semantic memory, training data,
 or effect authority.
 
+### Pairing-to-session boundary
+
+On the Android companion, saving a *changed* normalized gateway endpoint **or**
+bearer starts a new pseudonymous chat session. Re-saving the identical endpoint
+and bearer retains the current session. The preference update writes the new
+credential and session ID together, and the visible chat bubbles are cleared
+when the pairing changes. An exact same-pair re-save does not invalidate an
+in-flight reply or reset the prior connection intent. A changed-pairing
+in-flight reply from the previous pairing is not
+shown in the new conversation; a request already sent (or racing the epoch
+check) may still finish and be archived under its *previous* session. Stale
+queued requests are skipped when detected, but an old slow request can delay
+a newly queued connection while the single worker drains.
+Existing encrypted journal records are **not
+deleted** or migrated automatically; session migration requires an explicit,
+separately authorized owner workflow.
+
+This is a *client-side continuity boundary*, not server-side tenant isolation:
+the V1 gateway still indexes archived turns by caller-supplied `session_id` and
+does not bind that identifier cryptographically to a specific bearer/owner.
+Anyone already authorized with the bearer and a known old session ID may still
+reach that old context. The independently developed V2 owner-scoped session and
+revocation mechanisms need separate qualification before making stronger
+cross-owner confidentiality claims. Switching models within an unchanged V1
+session can likewise reuse its history; it is not proof of model-specific memory.
+
 **Scope**: future Vera Companion messages after both client 0.2.3+ and
 journal-enabled gateway are active; no retroactive ChatGPT history import and
 no automatic access to other ChatGPT chats or files.
