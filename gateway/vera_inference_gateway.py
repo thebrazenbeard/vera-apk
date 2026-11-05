@@ -5,6 +5,7 @@ Bind ONLY to loopback. Publish through authenticated Tailscale Serve HTTPS,
 never via a router port-forward or public Tailscale Funnel.
 """
 import argparse
+import hashlib
 import http.client
 import hmac
 import sys
@@ -21,6 +22,24 @@ MAX_BODY = 32768
 MAX_REPLY = 16000
 OLLAMA_ROOT = "http://127.0.0.1:11434"
 OPENER = build_opener(ProxyHandler({}))
+
+
+def journal_session_key(session_id, bearer, scope):
+    """Bind a journal lookup to one gateway bearer epoch when explicitly opted in.
+
+    This is NOT an owner identity or a per-session bearer permission check:
+    the same authenticated bearer with a known session ID can derive the same
+    lookup. Legacy mode deliberately keeps existing archives reachable.
+    """
+    if scope == "legacy":
+        return session_id
+    if scope != "bearer-v1":
+        raise ValueError("unsupported journal scope")
+    # `valid_chat` and CLI authentication already constrain these to ASCII.
+    # Do not persist, return to clients, or log the raw pairing bearer.
+    return hmac.new(bearer.encode("ascii"),
+                    b"vera-apk/stm/bearer-v1\0" + session_id.encode("ascii"),
+                    hashlib.sha256).hexdigest()
 
 
 def strict_json(raw):
@@ -205,9 +224,15 @@ def valid_chat(payload, allowed):
 class BoundedServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
-    def __init__(self, address, handler, token, journal=None, *, backend=None):
+    def __init__(self, address, handler, token, journal=None, *, backend=None,
+                 journal_scope="legacy"):
+        if journal_scope not in ("legacy", "bearer-v1"):
+            raise ValueError("unsupported journal scope")
+        if journal is None and journal_scope != "legacy":
+            raise ValueError("bearer-scoped journal requires an enabled journal")
         self.token = token
         self.journal = journal
+        self.journal_scope = journal_scope
         self.backend = backend
         self.slots = threading.BoundedSemaphore(6)
         super().__init__(address, handler)
@@ -289,12 +314,14 @@ class Handler(BaseHTTPRequestHandler):
             session_id = payload.get("session_id")
             request_id = payload.get("request_id")
             if self.server.journal is not None and session_id is not None:
+                archive_id = journal_session_key(
+                    session_id, self.server.token, self.server.journal_scope)
                 # v-e-r-a's guarded bridge accepts at most 13 messages:
                 # six history pairs plus the current user turn. Preserve the
                 # eight-turn legacy Ollama behavior when that backend is used.
                 history_limit = 6 if self.server.backend is not None else 8
                 prior = self.server.journal.recent(
-                    session_id, limit=history_limit, max_bytes=14000)
+                    archive_id, limit=history_limit, max_bytes=14000)
                 messages = []
                 for turn in prior:
                     messages.extend(({"role": "user", "content": turn["user"]},
@@ -312,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
             if type(answer) is not str or not 1 <= len(answer) <= MAX_REPLY:
                 raise ValueError("invalid model response")
             if self.server.journal is not None and session_id is not None:
-                self.server.journal.append_turn(session_id, request_id, model,
+                self.server.journal.append_turn(archive_id, request_id, model,
                     payload["messages"][-1]["content"], answer)
             return self.respond(200, {"reply": answer, "model": model,
                                       "node": "local", "mode": "response_only"})
@@ -329,6 +356,8 @@ def main():
     parser.add_argument("--journal-db", type=Path)
     parser.add_argument("--journal-key-file", type=Path)
     parser.add_argument("--stm-root", type=Path)
+    parser.add_argument("--journal-scope", choices=("legacy", "bearer-v1"),
+                        default="legacy")
     parser.add_argument("--upstream-backend", choices=("ollama", "vera-bridge"),
                         default="ollama")
     parser.add_argument("--bridge-port", type=int)
@@ -347,6 +376,8 @@ def main():
         sys.path.insert(0, str(args.stm_root.resolve()))
         from stm_phone_journal import EncryptedJournal
         journal = EncryptedJournal(args.journal_db, args.journal_key_file)
+    elif args.journal_scope != "legacy":
+        parser.error("bearer-scoped journal requires --journal-db, --journal-key-file and --stm-root")
     backend = None
     if args.upstream_backend == "vera-bridge":
         if args.bridge_port is None or args.bridge_model_id is None:
@@ -360,7 +391,8 @@ def main():
     elif args.bridge_port is not None or args.bridge_model_id is not None:
         parser.error("bridge options require --upstream-backend vera-bridge")
     with BoundedServer(("127.0.0.1", args.port), Handler, token,
-                       journal=journal, backend=backend) as server:
+                       journal=journal, backend=backend,
+                       journal_scope=args.journal_scope) as server:
         print("Vera inference gateway listening on loopback:", args.port, flush=True)
         server.serve_forever(poll_interval=0.5)
 

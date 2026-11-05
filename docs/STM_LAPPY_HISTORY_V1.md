@@ -64,6 +64,34 @@ revocation mechanisms need separate qualification before making stronger
 cross-owner confidentiality claims. Switching models within an unchanged V1
 session can likewise reuse its history; it is not proof of model-specific memory.
 
+### Optional bearer-epoch STM namespace (source-only)
+
+An operator may explicitly start a *separately qualified* V1 gateway with
+`--journal-scope bearer-v1` alongside the existing three journal flags. This
+uses a domain-separated HMAC-SHA256 of the validated bearer and client-provided
+session ID as the lookup key. Only the 64-character pseudonymous derived ID
+reaches the encrypted journal; the bearer itself is never stored in journal
+records or returned to the model. A changed bearer no longer automatically
+retrieves records saved under the previous bearer, even when the client sends
+the same session ID. It does not add an API operation, a new listener, or a
+permission to retrieve a history from another source.
+
+**This mode is opt-in and OFF by default.** The default `legacy` keeps the
+existing journal lookup unchanged. Switching to `bearer-v1` does **not**
+silently read or migrate old `legacy` session IDs: their encrypted records stay
+on disk but become invisible to ordinary scoped lookup. Reverting to legacy
+can expose that prior context again. Credential rotation also strands the
+prior bearer-epoch archive until an owner explicitly authorizes a separate
+recovery/migration workflow. Don't activate this mode on a live archive without
+planning that readback change; no automatic migration or deletion exists.
+
+This HMAC namespace is **not** journal encryption or true owner isolation.
+Two devices sharing the same bearer and knowing the same client session ID
+still address the same namespace; a valid bearer holder can request any known
+session ID within that bearer epoch. V2 owner-scoped authentication/revocation
+remains the needed authority boundary. No live switch, journal migration, or
+host service restart has been attempted by this source change.
+
 **Scope**: future Vera Companion messages after both client 0.2.3+ and
 journal-enabled gateway are active; no retroactive ChatGPT history import and
 no automatic access to other ChatGPT chats or files.
