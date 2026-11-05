@@ -31,15 +31,15 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: thebrazenbeard/v-e-r-a
-          ref: 9857a1d793b8723d53d86f71106872d5bcf1e935
+          ref: 7f8346b1328e8b4e3f172d1c1e10ad5738cb7d89
           path: _interop/v-e-r-a
           persist-credentials: false
-      - name: Cross-repository four-server HTTP wire tests (synthetic)
+      - name: Cross-repository protected five-case HTTP wire tests (synthetic)
         env:
           VERA_INTERFACE_SOURCE_ROOT: ${{ github.workspace }}/_interop/v-e-r-a
         run: |
           test -f "$VERA_INTERFACE_SOURCE_ROOT/interface/server.py"
-          test "$(git -C "$VERA_INTERFACE_SOURCE_ROOT" rev-parse HEAD)" = "9857a1d793b8723d53d86f71106872d5bcf1e935"
+          test "$(git -C "$VERA_INTERFACE_SOURCE_ROOT" rev-parse HEAD)" = "7f8346b1328e8b4e3f172d1c1e10ad5738cb7d89"
           python3 -m unittest -v gateway.tests.test_real_hybrid_http_interop
       - name: Run Android unit tests
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest

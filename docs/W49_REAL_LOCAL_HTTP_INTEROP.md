@@ -101,3 +101,29 @@ single-flight direct-bridge fix. Both repos remain Draft and this tests
 HTTP composability with synthetic replies only. The top-level Android checkout
 also now uses `persist-credentials: false` so imported, pinned web source does
 not run while the APK repository token remains in local Git credential config.
+
+## W51 owner-only upstream authentication regression
+
+The optional fifth HTTP test adds **two distinct fake owner-secret files** to
+the synthetic local harness: an upstream llama-server Bearer key and a separate
+UI-to-bridge `X-Vera-Bridge-Key`. The phone has only its own independent pairing
+bearer. The synthetic upstream rejects unauthenticated direct HTTP calls; the
+bridge rejects missing or incorrect client-key calls; the normal phone request
+must still traverse the protected bridge while revealing **neither** owner key
+to the phone response, session journal double, nor upstream model request body.
+The bridge client key must also not be forwarded as a model HTTP header.
+
+These are disposable, obvious test strings in process-local temporary files,
+**not** owner credential admission or a live Windows/Android deployment.
+Source tests cannot establish the production key-file NTFS ACL, secure
+distribution to the trusted host, durable phone pairing, or resistance to an
+already-compromised same-user machine. A governed physical rollout remains
+blocked until the host's native process and authorization gates pass.
+
+The **current W51** test constant and workflow are now pinned together to
+`v-e-r-a` Draft #30 at immutable head
+`7f8346b1328e8b4e3f172d1c1e10ad5738cb7d89`, superseding W50's historical
+`9857a1d...` pin for this proposed branch. The dedicated CI step runs all
+**five** real-localhost synthetic HTTP cases. Generic unittest discovery still
+skips these five before the separate web checkout; the dedicated step must
+execute five `ok` cases at this exact head before calling hosted coverage PASS.

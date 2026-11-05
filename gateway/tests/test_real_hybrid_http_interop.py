@@ -33,7 +33,7 @@ PHONE_BEARER = "b" * 48  # deterministic non-secret test-only bearer
 SESSION_ID = "s" * 32
 SOURCE_ROOT = Path(os.environ["VERA_INTERFACE_SOURCE_ROOT"]).resolve() if (
     os.environ.get("VERA_INTERFACE_SOURCE_ROOT")) else None
-VERA_PR30_HEAD = "9857a1d793b8723d53d86f71106872d5bcf1e935"
+VERA_PR30_HEAD = "7f8346b1328e8b4e3f172d1c1e10ad5738cb7d89"
 
 
 def synthetic_owner_profile() -> dict:
@@ -65,19 +65,36 @@ def synthetic_owner_profile() -> dict:
 class SyntheticModel(BaseHTTPRequestHandler):
     requests: list[dict] = []
     finish_reason: str | None = "stop"
+    required_bearer: str | None = None
+    observed_authorization: list[str] = []
+    observed_bridge_headers: list[str] = []
 
     def log_message(self, *_args):
         pass
 
-    def _json(self, payload):
+    def _json(self, payload, status=200):
         raw = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
 
+    def _authorized(self):
+        value = self.headers.get("Authorization", "")
+        type(self).observed_authorization.append(value)
+        type(self).observed_bridge_headers.append(
+            self.headers.get("X-Vera-Bridge-Key", ""))
+        if type(self).required_bearer is None:
+            return True
+        if value != "Bearer " + type(self).required_bearer:
+            self._json({"error": "unauthorized"}, status=401)
+            return False
+        return True
+
     def do_GET(self):
+        if not self._authorized():
+            return
         if self.path == "/health":
             return self._json({"status": "ok"})
         if self.path == "/v1/models":
@@ -85,6 +102,8 @@ class SyntheticModel(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        if not self._authorized():
+            return
         if self.path != "/v1/chat/completions":
             return self.send_error(404)
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -156,6 +175,9 @@ class RealHybridHTTPInteropTests(unittest.TestCase):
     def setUp(self):
         SyntheticModel.requests = []
         SyntheticModel.finish_reason = "stop"
+        SyntheticModel.required_bearer = None
+        SyntheticModel.observed_authorization = []
+        SyntheticModel.observed_bridge_headers = []
         self.services = []
         self.owner_dir = tempfile.TemporaryDirectory(prefix="w49-synthetic-owner-")
         self.addCleanup(self.owner_dir.cleanup)
@@ -171,6 +193,57 @@ class RealHybridHTTPInteropTests(unittest.TestCase):
         self.bridge = self._run(bridge)
         self.journal = MemoryJournalDouble()
 
+    def test_real_phone_keeps_owner_upstream_api_key_server_side(self):
+        """The phone knows its pairing bearer, never llama-server's key."""
+        upstream_key = "synthetic-upstream-key-" + "k" * 48
+        bridge_key = "synthetic-bridge-client-key-" + "q" * 48
+        self.assertNotEqual(upstream_key, PHONE_BEARER)
+        self.assertNotEqual(bridge_key, upstream_key)
+        self.assertNotEqual(bridge_key, PHONE_BEARER)
+        owner_key_file = Path(self.owner_dir.name) / "owner-upstream-api-key.txt"
+        owner_key_file.write_text(upstream_key + "\n", encoding="ascii")
+        owner_key_file.chmod(0o600)  # test owner file on hosted POSIX CI only
+        client_key_file = Path(self.owner_dir.name) / "owner-bridge-client-key.txt"
+        client_key_file.write_text(bridge_key + "\n", encoding="ascii")
+        client_key_file.chmod(0o600)
+        SyntheticModel.required_bearer = upstream_key
+
+        # Replace the default synthetic bridge with an explicitly protected one.
+        protected_bridge = self.LoopbackModelBridge(
+            f"http://127.0.0.1:{self.synthetic.server_port}", MODEL,
+            timeout=3, max_chat_tokens=96,
+            upstream_api_key_file=owner_key_file,
+            client_api_key_file=client_key_file,
+            require_upstream_auth=True)
+        self.bridge = self._run(type(self).create_bridge(protected_bridge, port=0))
+        interface, phone = self._wire(bridge_client_key_file=client_key_file)
+
+        self.assertEqual(self._request(self.synthetic.server_port, "/v1/models")[0], 401)
+        self.assertEqual(SyntheticModel.observed_authorization, [""])
+        SyntheticModel.observed_authorization = []
+        SyntheticModel.observed_bridge_headers = []
+        self.assertEqual(self._request(self.bridge.server_port, "/api/tags")[0], 401)
+        self.assertEqual(self._request(self.bridge.server_port, "/api/tags", headers={
+            "X-Vera-Bridge-Key": PHONE_BEARER})[0], 401)
+        self.assertEqual(self._request(phone.server_port, "/v1/models")[0], 401)
+        self.assertEqual(self._request(phone.server_port, "/v1/models", headers={
+            "X-Vera-Bridge-Key": bridge_key})[0], 401)
+        self.assertEqual(self._request(phone.server_port, "/v1/models", headers={
+            "Authorization": "Bearer " + upstream_key})[0], 401)
+        self.assertEqual(SyntheticModel.requests, [])
+        code, result = self._phone(phone.server_port, "Do the keys stay apart?", "k")
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result["response_completion_status"], "complete")
+        self.assertEqual(len(self.journal.saved), 1)
+        self.assertTrue(SyntheticModel.observed_authorization)
+        self.assertTrue(all(value == "Bearer " + upstream_key
+                            for value in SyntheticModel.observed_authorization))
+        self.assertTrue(all(not value for value in SyntheticModel.observed_bridge_headers))
+        for observable in (result, self.journal.saved, SyntheticModel.requests):
+            self.assertNotIn(upstream_key, json.dumps(observable))
+            self.assertNotIn(bridge_key, json.dumps(observable))
+            self.assertNotIn(PHONE_BEARER, json.dumps(observable))
+
     def tearDown(self):
         for server, worker in reversed(self.services):
             server.shutdown()
@@ -184,9 +257,11 @@ class RealHybridHTTPInteropTests(unittest.TestCase):
         self.services.append((server, worker))
         return server
 
-    def _wire(self, *, configured=True):
+    def _wire(self, *, configured=True, bridge_client_key_file=None):
         opts = {"port": 0, "ollama_url": f"http://127.0.0.1:{self.bridge.server_port}",
                 "max_response_tokens": 96}
+        if bridge_client_key_file is not None:
+            opts["bridge_client_api_key_file"] = bridge_client_key_file
         if configured:
             opts.update(persona_profile_path=self.owner_path,
                         persona_presentation_path=self.presentation_path,
