@@ -68,3 +68,26 @@ What is actually checked over HTTP:
 > upstream emits fixed sentences rather than reasoning; a successful HTTP
 > roundtrip is not evidence of Vera's self-identification, sarcasm comprehension,
 > memory, consciousness, personality, trained model, or hardware readiness.
+
+## Hosted CI execution gate (W50)
+
+The Android workflow explicitly checks out the **public** `thebrazenbeard/v-e-r-a`
+source at immutable commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc`
+with `persist-credentials: false`, into an isolated `_interop/v-e-r-a`
+directory. A separate CI step first checks that `interface/server.py`
+exists and reads back the exact Git `HEAD`, then sets
+`VERA_INTERFACE_SOURCE_ROOT` and runs **all four real-localhost HTTP
+integration tests**. This is distinct from generic gateway unittest discovery,
+which otherwise reports them as **SKIP**.
+
+A future different web commit must be deliberately reviewed and repinned in
+both the workflow and test source; a moving branch is not an acceptable silent
+substitute. The workflow downloads no owner-private persona bytes and obtains
+no cross-repository write token. The synthetic test admission patch still
+cannot establish actual owner-source identity or model behavior.
+
+**Evidence classification:** GitHub workflow text is SOURCE only until an
+exact-head hosted Actions run reports the dedicated integration step completed
+and four tests executed without skipping. Hosted Actions remains inter-server
+HTTP inside one Python process; physical Android, real GGUF, Lappy admission,
+and encrypted production memory remain untested.
