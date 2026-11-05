@@ -41,8 +41,8 @@ class AndroidPairingSessionContract(unittest.TestCase):
         self.assertIn("worker.execute(() -> {\n            if (generation != pairingGeneration) return;", send)
         self.assertNotIn("if (generation != pairingGeneration) { busy = false", send)
         self.assertIn("pairingSession = SecureConfig.sessionId(this)", send)
-        self.assertIn("GatewayClient.chat(url, pairingToken", send)
-        self.assertNotIn("GatewayClient.chat(url, SecureConfig.token", send)
+        self.assertIn("GatewayClient.chatWithReceipt(\n                        url, pairingToken", send)
+        self.assertNotIn("GatewayClient.chatWithReceipt(url, SecureConfig.token", send)
 
 
 if __name__ == "__main__":
