@@ -252,14 +252,26 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
 
     def test_w48_hybrid_rejects_partial_or_forged_source_receipts(self):
         for override in (
+                {"kind": "trained_identity"},
+                {"repository": "attacker/vera"},
+                {"profile_id": "OTHER_PROFILE"},
+                {"profile_version": "9.9.9"},
+                {"source_commit": "evil"},
+                {"source_sha256": "evil"},
+                {"presentation_implementation": "FULLY_APPLIED"},
                 {"profile_blob_sha": "unverified"},
                 {"presentation_blob_sha": "unverified"},
                 {"qualification": "NOT_CONFIGURED"},
                 {"prompt_layer": "caller_owned"},
                 {"trained_weights_modified": True},
+                {"trained_weights_modified": 0},
                 {"identity_attested": True},
+                {"identity_attested": 0},
                 {"source_classification": {"kind": "trained_identity"}},
+                {"source_classification": {
+                    **PERSONA["source_classification"], "origin": "caller_supplied"}},
                 {"source_classification": None},
+                {"effect_authority": True},
         ):
             with self.subTest(override=override):
                 FakeGovernedInterface.persona_override = override
@@ -277,6 +289,23 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
         self.assertNotIn("reply", result)
         self.assertTrue(any(path == "/api/chat" for path, _, _
                             in FakeGovernedInterface.calls))
+
+        # Some source fields were previously forwarded without comparison.
+        # A 200 here would attest an inconsistent persona provenance claim.
+        for field, forged in (
+                ("repository", "attacker/vera"),
+                ("profile_id", "OTHER_PROFILE"),
+                ("profile_version", "9.9.9"),
+                ("source_commit", "evil"),
+                ("source_sha256", "evil"),
+                ("presentation_implementation", "FULLY_APPLIED"),
+                ("kind", "trained_identity")):
+            with self.subTest(field=field):
+                FakeGovernedInterface.chat_persona_override = {field: forged}
+                code, result = self.chat()
+                self.assertEqual(code, 503)
+                self.assertNotIn("reply", result)
+        FakeGovernedInterface.chat_persona_override = {}
 
     def test_filtered_length_unknown_receipts_forwarded_exactly(self):
         for reason, expected in (("length_limited", True), ("filtered", False),
