@@ -7,7 +7,10 @@ and it does not load any GGUF, model weights,
 trained adapter, APK, user credential, or private persona file. Its source pin is:
 
 - `thebrazenbeard/v-e-r-a` Draft PR #30 commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc`.
-- `thebrazenbeard/vera-apk` Draft PR #22 commit `f66691246511bdb979ebe0c04e28f45a9ccddcb8` as this test's parent.
+- `thebrazenbeard/vera-apk` Draft PR #22 current target-base commit
+  `ce80a9add67fc2a00fc9fd878227a4cf7f049127` for combined validation.
+  The original W49 branch forked from earlier #22 `f66691246511bdb979ebe0c04e28f45a9ccddcb8`;
+  both are preserved as historical source facts, not interchangeable heads.
 
 The test intentionally resides only in `vera-apk` and uses an **external checkout**
 of the exact `v-e-r-a` source through a caller-supplied path. The former is
