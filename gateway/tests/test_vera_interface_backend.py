@@ -18,13 +18,24 @@ import vera_inference_gateway as gateway
 MODEL = "qwen35-pinned-mock-only"
 SESSION = "s" * 48
 PERSONA = {
+    "kind": "behavior_configuration",
+    "profile_id": "VERA_BEHAVIOR_PROFILE_V1",
+    "profile_version": "1.0.1",
+    "repository": "thebrazenbeard/vera",
     "profile_blob_sha": gateway.VERA_PERSONA_PROFILE_BLOB,
+    "source_commit": "6783c0ac8da9286db9b0094426d0c4f08822220f",
+    "source_sha256": "ec1defa8fcf96371a427991d40695842ffe6794aeb2e3f26c69ef5f528ee7d6d",
     "presentation_blob_sha": gateway.VERA_PERSONA_PRESENTATION_BLOB,
     "qualification": "SOURCE_ONLY",
     "prompt_layer": "server_owned_system",
     "trained_weights_modified": False,
     "identity_attested": False,
-    "source_classification": {"kind": "behavior_configuration"},
+    "source_classification": {
+        "kind": "behavior_configuration",
+        "origin": "explicit_owner_provisioned_pinned_profile",
+        "imported_knowledge": False,
+        "trained_weights_modified": False,
+    },
 }
 
 
@@ -32,6 +43,10 @@ class FakeGovernedInterface(BaseHTTPRequestHandler):
     calls = []
     bad_profile = False
     legacy_persona_prompt_only = False
+    hybrid_unconfigured = False
+    hybrid_profile_without_presentation = False
+    persona_override = {}
+    chat_persona_override = {}
     reason = "complete"
     missing_reason = False
 
@@ -67,9 +82,21 @@ class FakeGovernedInterface(BaseHTTPRequestHandler):
                     "persona_prompt": "pinned_owner_profile",
                     "model_identity_attested": False,
                 })
-            persona = dict(PERSONA)
+            persona = {**PERSONA, **self.persona_override}
             if self.bad_profile:
                 persona["profile_blob_sha"] = "forged"
+            if self.hybrid_unconfigured:
+                # W48 owner-provisioned hybrid does not claim the configured
+                # source unless BOTH pinned profile files were accepted.
+                persona = {"kind": "not_connected",
+                           "qualification": "NOT_CONFIGURED",
+                           "prompt_layer": "none",
+                           "identity_attested": False,
+                           "trained_weights_modified": False}
+            elif self.hybrid_profile_without_presentation:
+                # Owner supplied the profile file but omitted the separately
+                # pinned presentation file; partial sources cannot pass.
+                persona.pop("presentation_blob_sha", None)
             return self.reply(200, {"interface": "online", "authority": "response_only",
                                     "external_actions": "not_connected", "persona_source": persona})
         if self.path == "/api/models":
@@ -97,7 +124,8 @@ class FakeGovernedInterface(BaseHTTPRequestHandler):
         response = {"reply": "A governed mock reply", "model": MODEL, "node": "local",
                     "mode": "response_only", "response_incomplete": incomplete,
                     "response_truncated": truncated, "response_completion_status": reason,
-                    "response_token_limit": 192, "persona_source": dict(PERSONA)}
+                    "response_token_limit": 192,
+                    "persona_source": {**PERSONA, **self.chat_persona_override}}
         if self.missing_reason:
             response.pop("response_completion_status")
         return self.reply(200, response)
@@ -108,6 +136,10 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
         FakeGovernedInterface.calls = []
         FakeGovernedInterface.bad_profile = False
         FakeGovernedInterface.legacy_persona_prompt_only = False
+        FakeGovernedInterface.hybrid_unconfigured = False
+        FakeGovernedInterface.hybrid_profile_without_presentation = False
+        FakeGovernedInterface.persona_override = {}
+        FakeGovernedInterface.chat_persona_override = {}
         FakeGovernedInterface.reason = "complete"
         FakeGovernedInterface.missing_reason = False
         self.interface = ThreadingHTTPServer(("127.0.0.1", 0), FakeGovernedInterface)
@@ -177,6 +209,71 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
         self.assertNotIn("reply", result)
         self.assertFalse(any(path == "/api/chat" for path, _, _
                              in FakeGovernedInterface.calls))
+
+    def test_w48_owner_provisioned_hybrid_opt_in_or_generic_fails_closed(self):
+        """W48 source-only wire fixture; no actual files/model installed here."""
+        # A configured hybrid interface permits the intended governed route
+        # and advertises a non-attesting, pinned configuration source.
+        self.assertEqual(self.call("/v1/models")[1]["models"], [MODEL])
+        code, result = self.chat()
+        self.assertEqual(code, 200)
+        self.assertEqual(result["persona_source"]["qualification"], "SOURCE_ONLY")
+        self.assertEqual(result["persona_source"]["profile_blob_sha"],
+                         gateway.VERA_PERSONA_PROFILE_BLOB)
+        self.assertEqual(result["persona_source"]["presentation_blob_sha"],
+                         gateway.VERA_PERSONA_PRESENTATION_BLOB)
+        self.assertIs(result["persona_source"]["identity_attested"], False)
+        self.assertNotIn(SESSION, json.dumps(result))
+
+        # A working generic model must never be accepted as a configured
+        # Vera persona; no fallback to raw /v1/chat/completions occurs.
+        FakeGovernedInterface.calls.clear()
+        FakeGovernedInterface.hybrid_unconfigured = True
+        code, result = self.chat()
+        self.assertEqual(code, 503)
+        self.assertNotIn("reply", result)
+        self.assertFalse(any(path == "/api/chat" for path, _, _
+                             in FakeGovernedInterface.calls))
+
+        # The W48 hybrid's source receipt can truthfully say SOURCE_ONLY when
+        # only its profile file was provided, but the APK contract requires
+        # the separate canonical presentation blob too.
+        FakeGovernedInterface.calls.clear()
+        FakeGovernedInterface.hybrid_unconfigured = False
+        FakeGovernedInterface.hybrid_profile_without_presentation = True
+        code, result = self.chat()
+        self.assertEqual(code, 503)
+        self.assertNotIn("reply", result)
+        self.assertFalse(any(path == "/api/chat" for path, _, _
+                             in FakeGovernedInterface.calls))
+
+    def test_w48_hybrid_rejects_partial_or_forged_source_receipts(self):
+        for override in (
+                {"profile_blob_sha": "unverified"},
+                {"presentation_blob_sha": "unverified"},
+                {"qualification": "NOT_CONFIGURED"},
+                {"prompt_layer": "caller_owned"},
+                {"trained_weights_modified": True},
+                {"identity_attested": True},
+                {"source_classification": {"kind": "trained_identity"}},
+                {"source_classification": None},
+        ):
+            with self.subTest(override=override):
+                FakeGovernedInterface.persona_override = override
+                code, result = self.chat()
+                self.assertEqual(code, 503)
+                self.assertNotIn("reply", result)
+                FakeGovernedInterface.persona_override = {}
+
+        # The status gate alone is insufficient: the source must still match
+        # on the exact generation response after the model has run.
+        FakeGovernedInterface.chat_persona_override = {
+            "presentation_blob_sha": "swapped_after_status"}
+        code, result = self.chat()
+        self.assertEqual(code, 503)
+        self.assertNotIn("reply", result)
+        self.assertTrue(any(path == "/api/chat" for path, _, _
+                            in FakeGovernedInterface.calls))
 
     def test_filtered_length_unknown_receipts_forwarded_exactly(self):
         for reason, expected in (("length_limited", True), ("filtered", False),

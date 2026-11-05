@@ -198,3 +198,33 @@ with 503**; a mock regression test enforces this. Independent green CIs
 for both incompatible drafts do **not** establish composed runtime success.
 The two upstream histories require explicit source reconciliation and
 fresh integration qualification before any phone/host deployment.
+
+## 2026-11-05 W48: exact hybrid upstream contract (draft-only)
+
+`v-e-r-a` [Draft PR #30](https://github.com/thebrazenbeard/v-e-r-a/pull/30)
+at exact reviewed head `9aa153aaf361c7a562d967f53c395d03afcf91d7`
+reconciles the owner-provisioned #24 persona rights model with #28's typed
+response status. Its `interface/persona_contract.py`, `persona_profile.py`
+and `server.py` were inspected for this phone adapter. No proprietary owner
+profile or presentation bytes are copied into this repository.
+
+The phone gateway's opt-in `vera-interface` composition has these source
+conditions, enforced by `_profile_ok` on **both** `/api/status` and
+`/api/chat`:
+
+| Owner-provisioned upstream state | Receipt | APK treatment |
+| --- | --- | --- |
+| Exact approved profile JSON **and** presentation MD, both locally verified | Pinned Git blobs `0c79625b...` and `887bfe1d...`; `SOURCE_ONLY`, server-owned system prompt, no attested identity | Accept configured source and typed completion if exact model and response schema also match |
+| Neither file configured | `qualification=NOT_CONFIGURED`, `prompt_layer=none` | 503; no generic fallback |
+| Profile file verified but presentation missing | `SOURCE_ONLY` with no presentation blob | 503; no partial persona promotion |
+| Changed hash, promoted identity claim or changed source between status and chat | Mismatched receipt | 503 |
+
+`gateway/tests/test_vera_interface_backend.py` now contains a deterministic
+mock of the published #30 wire shapes, configured success, generic mode,
+profile-only mode and adversarial forged/stale receipts. It neither provisions
+private source files nor validates that the hosted model actually follows the
+configured conversational behavior. Source composition remains **candidate**
+until the exact APK+web draft stack is integrated, installed and checked on
+an owner-authorized local host. The gateway's model inventory gate currently
+requires the configured exact model as the sole exposed entry; additional
+installed models will fail closed rather than silently changing the choice.
