@@ -25,6 +25,20 @@ jobs:
           gradle-version: "9.6.0"
       - name: Test inference gateway (stdlib-only)
         run: python3 -m unittest discover -s gateway/tests -v
+      - name: Checkout pinned public v-e-r-a source for HTTP interop
+        uses: actions/checkout@v7
+        with:
+          repository: thebrazenbeard/v-e-r-a
+          ref: f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc
+          path: _interop/v-e-r-a
+          persist-credentials: false
+      - name: Cross-repository four-server HTTP wire tests (synthetic)
+        env:
+          VERA_INTERFACE_SOURCE_ROOT: ${{ github.workspace }}/_interop/v-e-r-a
+        run: |
+          test -f "$VERA_INTERFACE_SOURCE_ROOT/interface/server.py"
+          test "$(git -C "$VERA_INTERFACE_SOURCE_ROOT" rev-parse HEAD)" = "f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc"
+          python3 -m unittest -v gateway.tests.test_real_hybrid_http_interop
       - name: Run Android unit tests
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
       - name: Build installable debug APK
