@@ -4,10 +4,11 @@ This optional integration test exercises **real localhost HTTP requests between
 four independent servers in threads of one Python OS process**, drawing code
 from two public source repositories. It does not claim inter-process isolation,
 and it does not load any GGUF, model weights,
-trained adapter, APK, user credential, or private persona file. Its source pin is:
+trained adapter, APK, user credential, or private persona file. At W49, its
+source pins were:
 
 - `thebrazenbeard/v-e-r-a` Draft PR #30 commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc`.
-- `thebrazenbeard/vera-apk` Draft PR #22 current target-base commit
+- `thebrazenbeard/vera-apk` Draft PR #22 then-current target-base commit
   `ce80a9add67fc2a00fc9fd878227a4cf7f049127` for combined validation.
   The original W49 branch forked from earlier #22 `f66691246511bdb979ebe0c04e28f45a9ccddcb8`;
   both are preserved as historical source facts, not interchangeable heads.
@@ -21,7 +22,7 @@ VERA_INTERFACE_SOURCE_ROOT=/absolute/path/to/verified/v-e-r-a-pr30-checkout \
   python -m unittest -v gateway.tests.test_real_hybrid_http_interop
 ```
 
-Without that environment variable, all four cross-repository tests report
+Without that environment variable, all five cross-repository tests report
 SKIP, not PASS. The test requires the supplied repository HEAD to equal the
 pinned SHA **and verifies that `interface/` has no staged/unstaged tracked
 modifications or relevant untracked sources**, and checks the imported package
@@ -71,13 +72,13 @@ What is actually checked over HTTP:
 
 ## Hosted CI execution gate (W50)
 
-The Android workflow explicitly checks out the **public** `thebrazenbeard/v-e-r-a`
+At W50, the Android workflow checked out the **public** `thebrazenbeard/v-e-r-a`
 source at immutable commit `9857a1d793b8723d53d86f71106872d5bcf1e935`
 with `persist-credentials: false`, into an isolated `_interop/v-e-r-a`
-directory. A separate CI step first checks that `interface/server.py`
-exists and reads back the exact Git `HEAD`, then sets
-`VERA_INTERFACE_SOURCE_ROOT` and runs **all four real-localhost HTTP
-integration tests**. This is distinct from generic gateway unittest discovery,
+directory. A separate CI step checked that `interface/server.py`
+existed and read back the exact Git `HEAD`, then set
+`VERA_INTERFACE_SOURCE_ROOT` and ran **all four then-defined real-localhost HTTP
+integration tests**. This was distinct from generic gateway unittest discovery,
 which otherwise reports them as **SKIP**.
 
 A future different web commit must be deliberately reviewed and repinned in
@@ -94,8 +95,8 @@ and encrypted production memory remain untested.
 
 ### W50 exact-source repin
 
-The W49 commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc` documented above is historical; the current
-opt-in interop test constant and hosted CI checkout are deliberately repinned
+The W49 commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc` documented above is historical; the W50
+opt-in interop test constant and hosted CI checkout were deliberately repinned
 together to `9857a1d793b8723d53d86f71106872d5bcf1e935` after the separate web #30
 single-flight direct-bridge fix. Both repos remain Draft and this tests
 HTTP composability with synthetic replies only. The top-level Android checkout
@@ -120,10 +121,12 @@ distribution to the trusted host, durable phone pairing, or resistance to an
 already-compromised same-user machine. A governed physical rollout remains
 blocked until the host's native process and authorization gates pass.
 
-The **current W51** test constant and workflow are now pinned together to
-`v-e-r-a` Draft #30 at immutable head
+The W51 initial protected-source checkpoint pinned the test constant and workflow
+to `v-e-r-a` Draft #30 at immutable head
 `7f8346b1328e8b4e3f172d1c1e10ad5738cb7d89`, superseding W50's historical
-`9857a1d...` pin for this proposed branch. The dedicated CI step runs all
+`9857a1d...` pin. **W51 Wave 4 is now current**: the test constant and workflow
+both pin the reviewed two-parent web head
+`a44a50a95c53132c32f732fc5308d6cb60fe2ef5`. The dedicated CI step runs all
 **five** real-localhost synthetic HTTP cases. Generic unittest discovery still
 skips these five before the separate web checkout; the dedicated step must
 execute five `ok` cases at this exact head before calling hosted coverage PASS.
