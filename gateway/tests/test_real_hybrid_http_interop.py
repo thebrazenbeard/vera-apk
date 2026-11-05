@@ -33,7 +33,7 @@ PHONE_BEARER = "b" * 48  # deterministic non-secret test-only bearer
 SESSION_ID = "s" * 32
 SOURCE_ROOT = Path(os.environ["VERA_INTERFACE_SOURCE_ROOT"]).resolve() if (
     os.environ.get("VERA_INTERFACE_SOURCE_ROOT")) else None
-VERA_PR30_HEAD = "f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc"
+VERA_PR30_HEAD = "9857a1d793b8723d53d86f71106872d5bcf1e935"
 
 
 def synthetic_owner_profile() -> dict:
