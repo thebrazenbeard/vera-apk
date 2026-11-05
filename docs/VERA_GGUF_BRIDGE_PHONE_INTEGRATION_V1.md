@@ -152,3 +152,34 @@ The new `gateway/tests/test_vera_interface_backend.py` exercises two local
 mock HTTP servers and actual gateway routing. Passing those tests does
 **not** establish a live phone build, Qwen inference, profile effectiveness,
 session resilience under process restart, or installed runtime identity.
+
+## 2026-11-05 W47: completion provenance and divergent upstream warning
+
+The optional raw `vera-bridge` backend now preserves its upstream validated
+OpenAI-compatible `finish_reason` on the response-only phone reply:
+
+| Upstream `finish_reason` | Phone completion status | Incomplete | Truncated |
+| --- | --- | --- | --- |
+| `stop` | `complete` | false | false |
+| `length` | `length_limited` | true | true |
+| `content_filter` | `filtered` | true | false |
+
+This is only a **reported decoding outcome**; it does not attest model
+identity or install Vera's behavior profile. The Android client accepts a
+typed completion receipt **without** `persona_source` in this raw-bridge
+case; if a persona source *is* supplied, its SOURCE_ONLY/authority fields
+must still validate. Existing `VeraBridgeBackend.chat()` remains a text-only
+Python compatibility adapter. Legacy Ollama remains unchanged and continues
+to omit completion metadata; no fabricated `complete` status is supplied.
+
+**Live draft incompatibility found:** At exact `v-e-r-a` PR #24 head
+`22b7dbbff1b1407a7d8fdc604a5182da8f7c10dc`, `/api/status` offers only
+`persona_prompt=pinned_owner_profile` and `model_identity_attested=false`,
+not the pinned `persona_source` receipt. Its `/api/chat` also lacks the typed
+completion contract of PR #28 (head
+`a8384bcb44f6160146c2e7ada4f3394b2128ee37`, stacked on PR #27).
+The governed `vera-interface` APK backend therefore **must reject PR #24
+with 503**; a mock regression test enforces this. Independent green CIs
+for both incompatible drafts do **not** establish composed runtime success.
+The two upstream histories require explicit source reconciliation and
+fresh integration qualification before any phone/host deployment.

@@ -21,6 +21,7 @@ class AndroidCompletionReceiptContract(unittest.TestCase):
         self.assertIn('"SOURCE_ONLY"', source)
         self.assertIn('"server_owned_system"', source)
         self.assertIn('"identity_attested"', source)
+        self.assertIn('if (result.has("persona_source"))', source)
         self.assertIn('"response_only"', source)
         self.assertIn('"Authorization", "Bearer " + token', source)
 

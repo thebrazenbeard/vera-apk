@@ -31,6 +31,7 @@ PERSONA = {
 class FakeGovernedInterface(BaseHTTPRequestHandler):
     calls = []
     bad_profile = False
+    legacy_persona_prompt_only = False
     reason = "complete"
     missing_reason = False
 
@@ -57,6 +58,15 @@ class FakeGovernedInterface(BaseHTTPRequestHandler):
         if not self.authenticated():
             return self.reply(403, {"error": "local session required"})
         if self.path == "/api/status":
+            if self.legacy_persona_prompt_only:
+                # Exact relevant distinction at v-e-r-a PR #24
+                # 22b7dbb: no `persona_source` receipt exists here.
+                return self.reply(200, {
+                    "interface": "online", "model_node": "local",
+                    "authority": "response_only", "external_actions": "not_connected",
+                    "persona_prompt": "pinned_owner_profile",
+                    "model_identity_attested": False,
+                })
             persona = dict(PERSONA)
             if self.bad_profile:
                 persona["profile_blob_sha"] = "forged"
@@ -97,6 +107,7 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
     def setUp(self):
         FakeGovernedInterface.calls = []
         FakeGovernedInterface.bad_profile = False
+        FakeGovernedInterface.legacy_persona_prompt_only = False
         FakeGovernedInterface.reason = "complete"
         FakeGovernedInterface.missing_reason = False
         self.interface = ThreadingHTTPServer(("127.0.0.1", 0), FakeGovernedInterface)
@@ -157,6 +168,15 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
         FakeGovernedInterface.bad_profile = False
         FakeGovernedInterface.missing_reason = True
         self.assertEqual(self.chat()[0], 503)
+
+    def test_v_e_r_a_pr24_prompt_only_status_is_not_pr28_governed_contract(self):
+        """Independent green CI on two divergent PRs is not composability."""
+        FakeGovernedInterface.legacy_persona_prompt_only = True
+        code, result = self.chat()
+        self.assertEqual(code, 503)
+        self.assertNotIn("reply", result)
+        self.assertFalse(any(path == "/api/chat" for path, _, _
+                             in FakeGovernedInterface.calls))
 
     def test_filtered_length_unknown_receipts_forwarded_exactly(self):
         for reason, expected in (("length_limited", True), ("filtered", False),

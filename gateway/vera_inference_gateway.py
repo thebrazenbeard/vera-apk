@@ -122,7 +122,7 @@ class VeraBridgeBackend:
             raise ValueError("exact bridge model absent or changed")
         return [self.model_id]
 
-    def chat(self, model, messages):
+    def chat_with_completion(self, model, messages):
         # Check again immediately before generation. The v-e-r-a bridge checks
         # its own pinned upstream ID again, but neither check is host admission.
         if model != self.model_id or self.models() != [model]:
@@ -146,7 +146,26 @@ class VeraBridgeBackend:
                 or not 1 <= len(message["content"]) <= MAX_REPLY):
             raise ValueError("non-text or effect-capable bridge response")
         message["content"].encode("utf-8")
-        return message["content"]
+        return message["content"], choice["finish_reason"]
+
+    def chat(self, model, messages):
+        """Retain the V1 text-only Python adapter for existing local callers."""
+        answer, _reason = self.chat_with_completion(model, messages)
+        return answer
+
+
+def bridge_completion_receipt(finish_reason):
+    """Map a validated upstream finish reason without claiming persona authority."""
+    mapping = {"stop": ("complete", False, False),
+               "length": ("length_limited", True, True),
+               "content_filter": ("filtered", True, False)}
+    if finish_reason not in mapping:
+        raise ValueError("unknown bridge completion reason")
+    status, incomplete, truncated = mapping[finish_reason]
+    return {"response_completion_status": status,
+            "response_incomplete": incomplete,
+            "response_truncated": truncated,
+            "response_token_limit": 256}
 
 
 def bounded_loopback_json(port, path, data=None, *, timeout, max_bytes, headers=None):
@@ -470,12 +489,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("bridge conversation exceeds text-only bounds")
             completion = None
             if self.server.backend:
-                delivered = self.server.backend.chat(model, messages)
                 if isinstance(self.server.backend, VeraInterfaceBackend):
+                    delivered = self.server.backend.chat(model, messages)
                     completion = delivered
                     answer = delivered["reply"]
+                elif isinstance(self.server.backend, VeraBridgeBackend):
+                    answer, reason = self.server.backend.chat_with_completion(model, messages)
+                    completion = bridge_completion_receipt(reason)
                 else:
-                    answer = delivered
+                    answer = self.server.backend.chat(model, messages)
             else:
                 result = ollama("/api/chat", {"model": model, "messages": messages,
                     "stream": False, "options": {"num_predict": 256}}, timeout=90)

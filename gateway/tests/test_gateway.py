@@ -87,6 +87,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(data["reply"], "READY")
         self.assertEqual(data["mode"], "response_only")
         self.assertNotIn("token", data)
+        self.assertNotIn("response_completion_status", data)
         self.assertEqual(upstream.call_args.args[0], "/api/chat")
 
     def test_rejects_duplicate_keys_and_tools(self):
