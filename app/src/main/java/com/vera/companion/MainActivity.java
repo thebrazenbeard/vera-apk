@@ -437,17 +437,22 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             if (generation != pairingGeneration) return;
             try {
-                String reply = GatewayClient.chat(url, pairingToken, selected, messages,
-                        pairingSession, requestId);
+                GatewayClient.ChatReply delivered = GatewayClient.chatWithReceipt(
+                        url, pairingToken, selected, messages, pairingSession, requestId);
                 runOnUiThread(() -> {
                     if (generation != pairingGeneration) return;
                     try {
                         history.add(new JSONObject().put("role", "user").put("content", prompt));
-                        history.add(new JSONObject().put("role", "assistant").put("content", reply));
+                        history.add(new JSONObject().put("role", "assistant")
+                                .put("content", delivered.text));
                     } catch (Exception ignored) { }
-                    append("VERA  •  " + selected, reply);
+                    append("VERA  •  " + selected, delivered.text);
                     busy = false;
-                    state("Serving model: " + selected);
+                    String completion = delivered.completionStatus;
+                    state("Serving model: " + selected
+                            + (completion.equals("length_limited") ? " · reply cut off"
+                            : completion.equals("filtered") ? " · reply filtered"
+                            : completion.equals("unknown") ? " · completion unverified" : ""));
                 });
             } catch (Exception e) {
                 boolean authenticationLost = ConnectionPolicy.requiresPairing(e.getMessage());
