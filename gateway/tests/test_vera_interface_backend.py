@@ -26,6 +26,7 @@ PERSONA = {
     "source_commit": "6783c0ac8da9286db9b0094426d0c4f08822220f",
     "source_sha256": "ec1defa8fcf96371a427991d40695842ffe6794aeb2e3f26c69ef5f528ee7d6d",
     "presentation_blob_sha": gateway.VERA_PERSONA_PRESENTATION_BLOB,
+    "presentation_implementation": "ADMITTED_SOURCE_REFERENCE_ONLY",
     "qualification": "SOURCE_ONLY",
     "prompt_layer": "server_owned_system",
     "trained_weights_modified": False,
@@ -222,6 +223,8 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
                          gateway.VERA_PERSONA_PROFILE_BLOB)
         self.assertEqual(result["persona_source"]["presentation_blob_sha"],
                          gateway.VERA_PERSONA_PRESENTATION_BLOB)
+        self.assertEqual(result["persona_source"]["presentation_implementation"],
+                         "ADMITTED_SOURCE_REFERENCE_ONLY")
         self.assertIs(result["persona_source"]["identity_attested"], False)
         self.assertNotIn(SESSION, json.dumps(result))
 

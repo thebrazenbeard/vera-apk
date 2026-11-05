@@ -203,6 +203,7 @@ fresh integration qualification before any phone/host deployment.
 
 `v-e-r-a` [Draft PR #30](https://github.com/thebrazenbeard/v-e-r-a/pull/30)
 at exact reviewed head `9aa153aaf361c7a562d967f53c395d03afcf91d7`
+and later exact updated head `5c14304b00679dd17add6c25d709cb042e414ba2`
 reconciles the owner-provisioned #24 persona rights model with #28's typed
 response status. Its `interface/persona_contract.py`, `persona_profile.py`
 and `server.py` were inspected for this phone adapter. No proprietary owner
@@ -218,6 +219,14 @@ conditions, enforced by `_profile_ok` on **both** `/api/status` and
 | Neither file configured | `qualification=NOT_CONFIGURED`, `prompt_layer=none` | 503; no generic fallback |
 | Profile file verified but presentation missing | `SOURCE_ONLY` with no presentation blob | 503; no partial persona promotion |
 | Changed hash, promoted identity claim or changed source between status and chat | Mismatched receipt | 503 |
+
+The updated hybrid receipt also states
+`presentation_implementation=ADMITTED_SOURCE_REFERENCE_ONLY` when the
+presentation MD bytes pass admission. The APK test asserts that field survives
+through `/api/chat`; this **only means the file reference was checked**. It
+does not mean bracketed gestures, the nonverbal status-bar contract or other
+presentation behavior has been rendered into the active model prompt or
+validated in a live conversation.
 
 `gateway/tests/test_vera_interface_backend.py` now contains a deterministic
 mock of the published #30 wire shapes, configured success, generic mode,
