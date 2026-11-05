@@ -34,19 +34,35 @@ public final class SecureConfig {
         return generator.generateKey();
     }
 
-    public static void save(Context context, String endpoint, String token) throws Exception {
+    /** A changed endpoint OR bearer starts fresh STM context; old archives remain untouched. */
+    public static boolean save(Context context, String endpoint, String token) throws Exception {
         String normalized = EndpointPolicy.normalize(endpoint);
         if (token == null || !token.matches("[A-Za-z0-9_-]{32,128}")) {
             throw new IllegalArgumentException("Invalid pairing token");
         }
+        String previousToken;
+        try {
+            previousToken = token(context);
+        } catch (Exception ignored) {
+            // An unreadable prior credential must never preserve a previous session.
+            previousToken = null;
+        }
+        boolean newSession = PairingSessionPolicy.requiresNewSession(
+                endpoint(context), previousToken, normalized, token);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key());
         byte[] encrypted = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+        SharedPreferences.Editor update = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putString("url", normalized)
                 .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
-                .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                .putBoolean("connection_wanted", false).apply();
+                .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP));
+        if (newSession) {
+            update.putString("chat_session_id", UUID.randomUUID().toString().replace("-", ""));
+            update.putBoolean("connection_wanted", false);
+        }
+        // Keep the pairing and its pseudonymous session update in one preference transaction.
+        if (!update.commit()) throw new IllegalStateException("Pairing could not be saved");
+        return newSession;
     }
 
     public static String endpoint(Context context) {
