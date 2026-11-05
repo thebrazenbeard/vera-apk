@@ -35,6 +35,10 @@ class AndroidCompletionReceiptContract(unittest.TestCase):
         self.assertIn('!delivered.completionStatus.equals("not_reported")', activity)
         self.assertIn('"LOCAL MODEL  •  " : "VERA  •  "', activity)
         self.assertIn('" · Vera persona not configured"', activity)
+        self.assertIn('if (ConversationHistoryPolicy.replayable(delivered.completionStatus))',
+                      activity)
+        self.assertIn('history.add(new JSONObject().put("role", "user")',
+                      activity.split('if (ConversationHistoryPolicy.replayable(', 1)[1])
         self.assertNotIn('X-Vera-Session', activity)
 
 

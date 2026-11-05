@@ -504,7 +504,13 @@ class Handler(BaseHTTPRequestHandler):
                 answer = result.get("message", {}).get("content")
             if type(answer) is not str or not 1 <= len(answer) <= MAX_REPLY:
                 raise ValueError("invalid model response")
-            if self.server.journal is not None and session_id is not None:
+            # The existing journal schema has no typed completion receipt.
+            # Never silently archive a partial/unknown turn as a completed
+            # assistant pair and replay it in later model requests. The phone
+            # can still display this response in the current session.
+            archive_reply = (completion is None or
+                             completion["response_completion_status"] == "complete")
+            if self.server.journal is not None and session_id is not None and archive_reply:
                 self.server.journal.append_turn(archive_id, request_id, model,
                     payload["messages"][-1]["content"], answer)
             response = {"reply": answer, "model": model,

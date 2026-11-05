@@ -188,6 +188,46 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
                 self.assertEqual(result["response_completion_status"], reason)
                 self.assertIs(result["response_truncated"], expected)
 
+    def test_partial_or_unknown_pair_stays_visible_but_never_replays_from_journal(self):
+        class Journal:
+            def __init__(self):
+                self.turns = []
+
+            def recent(self, _session, *, limit, max_bytes):
+                return self.turns[-limit:]
+
+            def append_turn(self, _session, request, model, prompt, answer):
+                self.turns.append({"user": prompt, "assistant": answer})
+
+        journal = Journal()
+        self.server.journal = journal
+
+        def ask(question, request):
+            return self.call("/v1/chat", {
+                "model": MODEL,
+                "messages": [{"role": "user", "content": question}],
+                "session_id": "s" * 16, "request_id": request * 16,
+            })
+
+        for status in ("length_limited", "filtered", "unknown"):
+            with self.subTest(status=status):
+                journal.turns.clear()
+                FakeGovernedInterface.reason = status
+                code, visible = ask("partial question", "p")
+                self.assertEqual(code, 200)
+                self.assertEqual(visible["response_completion_status"], status)
+                self.assertEqual(journal.turns, [])
+
+                FakeGovernedInterface.reason = "complete"
+                self.assertEqual(ask("retry question", "r")[0], 200)
+                self.assertEqual([t["user"] for t in journal.turns], ["retry question"])
+                self.assertEqual(ask("third question", "t")[0], 200)
+                sent = [body for path, _, body in FakeGovernedInterface.calls
+                        if path == "/api/chat"][-1]["messages"]
+                self.assertEqual([row["content"] for row in sent],
+                                 ["retry question", "A governed mock reply",
+                                  "third question"])
+
     def test_stm_history_uses_five_complete_pairs_not_six(self):
         class Journal:
             def recent(self, _session, *, limit, max_bytes):

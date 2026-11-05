@@ -176,6 +176,17 @@ Android labels a typed raw-bridge reply **LOCAL MODEL** with a visible
 unchanged when no completion receipt exists; no identity is inferred from
 that older path either.
 
+**Partial conversation replay:** A `length_limited`, `filtered`, or `unknown`
+reply remains visible in the current Android transcript with its status,
+but neither its user question nor its incomplete assistant answer enters
+subsequent in-memory model history. The gateway also omits that pair from
+encrypted STM journaling: the existing journal API has no typed completion
+column, so writing the partial text would silently replay it as complete
+on the next request. A later complete answer *does* enter history normally.
+This intentionally sacrifices cross-turn recovery of partial answers until
+a separately reviewed, completion-aware journal schema exists. Historical
+rows written before this patch cannot be retroactively classified.
+
 **Live draft incompatibility found:** At exact `v-e-r-a` PR #24 head
 `22b7dbbff1b1407a7d8fdc604a5182da8f7c10dc`, `/api/status` offers only
 `persona_prompt=pinned_owner_profile` and `model_identity_attested=false`,

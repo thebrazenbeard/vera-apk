@@ -171,6 +171,32 @@ class BridgeContractTests(unittest.TestCase):
         self.assertEqual(self.backend.chat(FakeVeraBridge.model_id,
                               chat["messages"]), "A bounded reply")
 
+    def test_raw_length_limited_pair_is_not_archived_as_complete(self):
+        class Journal:
+            turns = []
+
+            def recent(self, _session, *, limit, max_bytes):
+                return self.turns[-limit:]
+
+            def append_turn(self, _session, request, model, prompt, reply):
+                self.turns.append({"user": prompt, "assistant": reply})
+
+        journal = Journal()
+        self.server.journal = journal
+        payload = {"model": FakeVeraBridge.model_id,
+                   "messages": [{"role": "user", "content": "partial"}],
+                   "session_id": "s" * 16, "request_id": "p" * 16}
+        FakeVeraBridge.finish_reason = "length"
+        status, result = self.call("/v1/chat", "t" * 48, payload)
+        self.assertEqual((status, result["response_completion_status"]),
+                         (200, "length_limited"))
+        self.assertEqual(journal.turns, [])
+        FakeVeraBridge.finish_reason = "stop"
+        payload["messages"][0]["content"] = "fresh"
+        payload["request_id"] = "r" * 16
+        self.assertEqual(self.call("/v1/chat", "t" * 48, payload)[0], 200)
+        self.assertEqual([row["user"] for row in journal.turns], ["fresh"])
+
     def test_undisclosed_effects_model_swap_and_redirect_fail_closed(self):
         chat = {"model": FakeVeraBridge.model_id,
                 "messages": [{"role": "user", "content": "hello"}]}
