@@ -270,16 +270,39 @@ class VeraInterfaceBackend:
 
     @staticmethod
     def _profile_ok(receipt):
-        return (type(receipt) is dict
-                and receipt.get("profile_blob_sha") == VERA_PERSONA_PROFILE_BLOB
-                and receipt.get("presentation_blob_sha") == VERA_PERSONA_PRESENTATION_BLOB
-                and receipt.get("qualification") == "SOURCE_ONLY"
-                and receipt.get("prompt_layer") == "server_owned_system"
-                and receipt.get("trained_weights_modified") is False
-                and receipt.get("identity_attested") is False
-                and type(receipt.get("source_classification")) is dict
-                and receipt.get("source_classification", {}).get("kind")
-                == "behavior_configuration")
+        # W48 exact `v-e-r-a` #30 owner-provisioned source contract. These
+        # checks bind claims *about source configuration*, never model identity
+        # or behavioral effectiveness. A future persona revision must be
+        # deliberately reviewed, not silently treated as compatible.
+        expected = {
+            "kind": "behavior_configuration",
+            "profile_id": "VERA_BEHAVIOR_PROFILE_V1",
+            "profile_version": "1.0.1",
+            "repository": "thebrazenbeard/vera",
+            "profile_blob_sha": VERA_PERSONA_PROFILE_BLOB,
+            "source_commit": "6783c0ac8da9286db9b0094426d0c4f08822220f",
+            "source_sha256": "ec1defa8fcf96371a427991d40695842ffe6794aeb2e3f26c69ef5f528ee7d6d",
+            "presentation_blob_sha": VERA_PERSONA_PRESENTATION_BLOB,
+            "presentation_implementation": "ADMITTED_SOURCE_REFERENCE_ONLY",
+            "source_classification": {
+                "kind": "behavior_configuration",
+                "origin": "explicit_owner_provisioned_pinned_profile",
+                "imported_knowledge": False,
+                "trained_weights_modified": False,
+            },
+            "qualification": "SOURCE_ONLY",
+            "prompt_layer": "server_owned_system",
+            "identity_attested": False,
+            "trained_weights_modified": False,
+        }
+        if type(receipt) is not dict or receipt != expected:
+            return False
+        classification = receipt.get("source_classification")
+        return (type(classification) is dict
+                and receipt["identity_attested"] is False
+                and receipt["trained_weights_modified"] is False
+                and classification["imported_knowledge"] is False
+                and classification["trained_weights_modified"] is False)
 
     def _models(self, token):
         status = self._json("/api/status", token=token, timeout=3, max_bytes=4096)
@@ -292,16 +315,18 @@ class VeraInterfaceBackend:
         if (type(inventory) is not dict or inventory.get("node") != "local"
                 or inventory.get("models") != [self.model_id]):
             raise ValueError("exact interface model absent or changed")
-        return [self.model_id]
+        return [self.model_id], status["persona_source"]
 
     def models(self):
-        return self._models(self._session())
+        available, _persona_source = self._models(self._session())
+        return available
 
     def chat(self, model, messages):
         if model != self.model_id:
             raise ValueError("interface model changed")
         token = self._session()
-        if self._models(token) != [model]:
+        inventory, admitted_source = self._models(token)
+        if inventory != [model]:
             raise ValueError("Vera interface persona/model unavailable")
         result = self._json("/api/chat", {"model": model, "messages": messages},
                             token=token, timeout=85, max_bytes=65536)
@@ -309,7 +334,8 @@ class VeraInterfaceBackend:
                 or result.get("node") != "local"
                 or result.get("mode") != "response_only"
                 or "recalled_source" in result
-                or not self._profile_ok(result.get("persona_source"))):
+                or not self._profile_ok(result.get("persona_source"))
+                or result.get("persona_source") != admitted_source):
             raise ValueError("Vera interface authority or persona mismatch")
         answer = result.get("reply")
         status = result.get("response_completion_status")
