@@ -31,6 +31,7 @@ PERSONA = {
 class FakeGovernedInterface(BaseHTTPRequestHandler):
     calls = []
     bad_profile = False
+    legacy_persona_prompt_only = False
     reason = "complete"
     missing_reason = False
 
@@ -57,6 +58,15 @@ class FakeGovernedInterface(BaseHTTPRequestHandler):
         if not self.authenticated():
             return self.reply(403, {"error": "local session required"})
         if self.path == "/api/status":
+            if self.legacy_persona_prompt_only:
+                # Exact relevant distinction at v-e-r-a PR #24
+                # 22b7dbb: no `persona_source` receipt exists here.
+                return self.reply(200, {
+                    "interface": "online", "model_node": "local",
+                    "authority": "response_only", "external_actions": "not_connected",
+                    "persona_prompt": "pinned_owner_profile",
+                    "model_identity_attested": False,
+                })
             persona = dict(PERSONA)
             if self.bad_profile:
                 persona["profile_blob_sha"] = "forged"
@@ -97,6 +107,7 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
     def setUp(self):
         FakeGovernedInterface.calls = []
         FakeGovernedInterface.bad_profile = False
+        FakeGovernedInterface.legacy_persona_prompt_only = False
         FakeGovernedInterface.reason = "complete"
         FakeGovernedInterface.missing_reason = False
         self.interface = ThreadingHTTPServer(("127.0.0.1", 0), FakeGovernedInterface)
@@ -158,6 +169,15 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
         FakeGovernedInterface.missing_reason = True
         self.assertEqual(self.chat()[0], 503)
 
+    def test_v_e_r_a_pr24_prompt_only_status_is_not_pr28_governed_contract(self):
+        """Independent green CI on two divergent PRs is not composability."""
+        FakeGovernedInterface.legacy_persona_prompt_only = True
+        code, result = self.chat()
+        self.assertEqual(code, 503)
+        self.assertNotIn("reply", result)
+        self.assertFalse(any(path == "/api/chat" for path, _, _
+                             in FakeGovernedInterface.calls))
+
     def test_filtered_length_unknown_receipts_forwarded_exactly(self):
         for reason, expected in (("length_limited", True), ("filtered", False),
                                  ("unknown", None)):
@@ -167,6 +187,46 @@ class GovernedPhoneGatewayTests(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertEqual(result["response_completion_status"], reason)
                 self.assertIs(result["response_truncated"], expected)
+
+    def test_partial_or_unknown_pair_stays_visible_but_never_replays_from_journal(self):
+        class Journal:
+            def __init__(self):
+                self.turns = []
+
+            def recent(self, _session, *, limit, max_bytes):
+                return self.turns[-limit:]
+
+            def append_turn(self, _session, request, model, prompt, answer):
+                self.turns.append({"user": prompt, "assistant": answer})
+
+        journal = Journal()
+        self.server.journal = journal
+
+        def ask(question, request):
+            return self.call("/v1/chat", {
+                "model": MODEL,
+                "messages": [{"role": "user", "content": question}],
+                "session_id": "s" * 16, "request_id": request * 16,
+            })
+
+        for status in ("length_limited", "filtered", "unknown"):
+            with self.subTest(status=status):
+                journal.turns.clear()
+                FakeGovernedInterface.reason = status
+                code, visible = ask("partial question", "p")
+                self.assertEqual(code, 200)
+                self.assertEqual(visible["response_completion_status"], status)
+                self.assertEqual(journal.turns, [])
+
+                FakeGovernedInterface.reason = "complete"
+                self.assertEqual(ask("retry question", "r")[0], 200)
+                self.assertEqual([t["user"] for t in journal.turns], ["retry question"])
+                self.assertEqual(ask("third question", "t")[0], 200)
+                sent = [body for path, _, body in FakeGovernedInterface.calls
+                        if path == "/api/chat"][-1]["messages"]
+                self.assertEqual([row["content"] for row in sent],
+                                 ["retry question", "A governed mock reply",
+                                  "third question"])
 
     def test_stm_history_uses_five_complete_pairs_not_six(self):
         class Journal:

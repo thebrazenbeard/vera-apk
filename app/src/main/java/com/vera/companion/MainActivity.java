@@ -441,15 +441,24 @@ public final class MainActivity extends Activity {
                         url, pairingToken, selected, messages, pairingSession, requestId);
                 runOnUiThread(() -> {
                     if (generation != pairingGeneration) return;
-                    try {
-                        history.add(new JSONObject().put("role", "user").put("content", prompt));
-                        history.add(new JSONObject().put("role", "assistant")
-                                .put("content", delivered.text));
-                    } catch (Exception ignored) { }
-                    append("VERA  •  " + selected, delivered.text);
+                    if (ConversationHistoryPolicy.replayable(delivered.completionStatus)) {
+                        try {
+                            history.add(new JSONObject().put("role", "user").put("content", prompt));
+                            history.add(new JSONObject().put("role", "assistant")
+                                    .put("content", delivered.text));
+                        } catch (Exception ignored) { }
+                    }
+                    // A raw GGUF bridge can report generation completion but
+                    // does not install the canonical Vera conversation profile.
+                    // Legacy Ollama has no receipt: preserve its existing UI.
+                    boolean unconfiguredRawBridge = !delivered.personaConfigured
+                            && !delivered.completionStatus.equals("not_reported");
+                    append((unconfiguredRawBridge ? "LOCAL MODEL  •  " : "VERA  •  ")
+                            + selected, delivered.text);
                     busy = false;
                     String completion = delivered.completionStatus;
                     state("Serving model: " + selected
+                            + (unconfiguredRawBridge ? " · Vera persona not configured" : "")
                             + (completion.equals("length_limited") ? " · reply cut off"
                             : completion.equals("filtered") ? " · reply filtered"
                             : completion.equals("unknown") ? " · completion unverified" : ""));

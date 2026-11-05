@@ -21,6 +21,7 @@ class AndroidCompletionReceiptContract(unittest.TestCase):
         self.assertIn('"SOURCE_ONLY"', source)
         self.assertIn('"server_owned_system"', source)
         self.assertIn('"identity_attested"', source)
+        self.assertIn('if (result.has("persona_source"))', source)
         self.assertIn('"response_only"', source)
         self.assertIn('"Authorization", "Bearer " + token', source)
 
@@ -30,6 +31,14 @@ class AndroidCompletionReceiptContract(unittest.TestCase):
         self.assertIn('completion.equals("length_limited")', activity)
         self.assertIn('completion.equals("filtered")', activity)
         self.assertIn('completion.equals("unknown")', activity)
+        self.assertIn('!delivered.personaConfigured', activity)
+        self.assertIn('!delivered.completionStatus.equals("not_reported")', activity)
+        self.assertIn('"LOCAL MODEL  •  " : "VERA  •  "', activity)
+        self.assertIn('" · Vera persona not configured"', activity)
+        self.assertIn('if (ConversationHistoryPolicy.replayable(delivered.completionStatus))',
+                      activity)
+        self.assertIn('history.add(new JSONObject().put("role", "user")',
+                      activity.split('if (ConversationHistoryPolicy.replayable(', 1)[1])
         self.assertNotIn('X-Vera-Session', activity)
 
 

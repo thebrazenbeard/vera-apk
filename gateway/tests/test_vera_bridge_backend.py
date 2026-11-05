@@ -26,6 +26,7 @@ class FakeVeraBridge(BaseHTTPRequestHandler):
     invalid_utf8_text = False
     slow_body = False
     slow_headers = False
+    finish_reason = "stop"
     received = []
 
     def log_message(self, *_args):
@@ -84,7 +85,8 @@ class FakeVeraBridge(BaseHTTPRequestHandler):
             message["content"] = "\ud800"
         reply = {
             "model": "unexpected-model" if self.changed_model else self.model_id,
-            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "choices": [{"index": 0, "message": message,
+                         "finish_reason": self.finish_reason}],
         }
         if self.extra_response:
             reply["effect_authority"] = True
@@ -96,7 +98,8 @@ class BridgeContractTests(unittest.TestCase):
         for flag, value in (("ready", True), ("tool_response", False),
                             ("changed_model", False), ("redirect", False),
                             ("extra_response", False), ("invalid_utf8_text", False),
-                            ("slow_body", False), ("slow_headers", False)):
+                            ("slow_body", False), ("slow_headers", False),
+                            ("finish_reason", "stop")):
             setattr(FakeVeraBridge, flag, value)
         FakeVeraBridge.received = []
         self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), FakeVeraBridge)
@@ -147,6 +150,52 @@ class BridgeContractTests(unittest.TestCase):
             "model": FakeVeraBridge.model_id, "messages": chat["messages"],
             "stream": False, "max_tokens": 256,
         }])
+
+    def test_raw_bridge_completion_reason_has_typed_receipt_but_no_persona_claim(self):
+        chat = {"model": FakeVeraBridge.model_id,
+                "messages": [{"role": "user", "content": "synthetic text"}]}
+        for reason, status_name, incomplete, truncated in (
+                ("stop", "complete", False, False),
+                ("length", "length_limited", True, True),
+                ("content_filter", "filtered", True, False)):
+            with self.subTest(reason=reason):
+                FakeVeraBridge.finish_reason = reason
+                code, result = self.call("/v1/chat", "t" * 48, chat)
+                self.assertEqual((code, result["reply"]), (200, "A bounded reply"))
+                self.assertEqual(result["response_completion_status"], status_name)
+                self.assertIs(result["response_incomplete"], incomplete)
+                self.assertIs(result["response_truncated"], truncated)
+                self.assertEqual(result["response_token_limit"], 256)
+                self.assertNotIn("persona_source", result)
+        # Existing Python backend callers expecting raw text still work.
+        self.assertEqual(self.backend.chat(FakeVeraBridge.model_id,
+                              chat["messages"]), "A bounded reply")
+
+    def test_raw_length_limited_pair_is_not_archived_as_complete(self):
+        class Journal:
+            turns = []
+
+            def recent(self, _session, *, limit, max_bytes):
+                return self.turns[-limit:]
+
+            def append_turn(self, _session, request, model, prompt, reply):
+                self.turns.append({"user": prompt, "assistant": reply})
+
+        journal = Journal()
+        self.server.journal = journal
+        payload = {"model": FakeVeraBridge.model_id,
+                   "messages": [{"role": "user", "content": "partial"}],
+                   "session_id": "s" * 16, "request_id": "p" * 16}
+        FakeVeraBridge.finish_reason = "length"
+        status, result = self.call("/v1/chat", "t" * 48, payload)
+        self.assertEqual((status, result["response_completion_status"]),
+                         (200, "length_limited"))
+        self.assertEqual(journal.turns, [])
+        FakeVeraBridge.finish_reason = "stop"
+        payload["messages"][0]["content"] = "fresh"
+        payload["request_id"] = "r" * 16
+        self.assertEqual(self.call("/v1/chat", "t" * 48, payload)[0], 200)
+        self.assertEqual([row["user"] for row in journal.turns], ["fresh"])
 
     def test_undisclosed_effects_model_swap_and_redirect_fail_closed(self):
         chat = {"model": FakeVeraBridge.model_id,

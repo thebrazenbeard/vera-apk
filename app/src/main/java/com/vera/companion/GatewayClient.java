@@ -134,13 +134,20 @@ public final class GatewayClient {
                 || (completion.equals("unknown") && (incomplete != null || truncated != null))) {
             throw new IllegalStateException("Inconsistent completion receipt");
         }
-        JSONObject persona = result.getJSONObject("persona_source");
-        if (!"SOURCE_ONLY".equals(persona.optString("qualification"))
-                || !"server_owned_system".equals(persona.optString("prompt_layer"))
-                || persona.optBoolean("trained_weights_modified", true)
-                || persona.optBoolean("identity_attested", true)) {
-            throw new IllegalStateException("Persona configuration not verified");
+        // Raw v-e-r-a bridge completion receipts have no persona authority.
+        // Governed /api/chat receipts include a pinned SOURCE_ONLY persona;
+        // do not invent identity provenance for the older raw bridge.
+        boolean personaConfigured = false;
+        if (result.has("persona_source")) {
+            JSONObject persona = result.getJSONObject("persona_source");
+            if (!"SOURCE_ONLY".equals(persona.optString("qualification"))
+                    || !"server_owned_system".equals(persona.optString("prompt_layer"))
+                    || persona.optBoolean("trained_weights_modified", true)
+                    || persona.optBoolean("identity_attested", true)) {
+                throw new IllegalStateException("Persona configuration not verified");
+            }
+            personaConfigured = true;
         }
-        return new ChatReply(reply, completion, truncated, incomplete, true);
+        return new ChatReply(reply, completion, truncated, incomplete, personaConfigured);
     }
 }
