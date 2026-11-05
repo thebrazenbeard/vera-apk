@@ -1,7 +1,9 @@
 # W49 physical HTTP transport, wholly synthetic model
 
-This optional integration test exercises the **actual Python HTTP handlers**
-across two public source repositories. It does not load any GGUF, model weights,
+This optional integration test exercises **real localhost HTTP requests between
+four independent servers in threads of one Python OS process**, drawing code
+from two public source repositories. It does not claim inter-process isolation,
+and it does not load any GGUF, model weights,
 trained adapter, APK, user credential, or private persona file. Its source pin is:
 
 - `thebrazenbeard/v-e-r-a` Draft PR #30 commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc`.
@@ -17,10 +19,13 @@ VERA_INTERFACE_SOURCE_ROOT=/absolute/path/to/verified/v-e-r-a-pr30-checkout \
 ```
 
 Without that environment variable, all four cross-repository tests report
-SKIP, not PASS. If the supplied repository HEAD is not the pinned SHA, the
-run fails until reviewers deliberately qualify the changed source again.
+SKIP, not PASS. The test requires the supplied repository HEAD to equal the
+pinned SHA **and verifies that `interface/` has no staged/unstaged tracked
+modifications or relevant untracked sources**, and checks the imported package
+path. A different or dirty source fails until deliberately qualified again.
 
-The temporary test topology uses kernel-allocated `127.0.0.1:0` ports:
+The temporary test topology uses kernel-allocated `127.0.0.1:0` ports. It is
+**inter-server HTTP wire compatibility**, not independent OS process isolation:
 
 ```text
 Synthetic /v1/chat model HTTP server
@@ -34,7 +39,7 @@ owner-profile JSON and a dummy presentation Markdown are written to one
 temporary directory. **Only inside the test process**, source admission digests
 are mocked to allow these synthetic fixtures. The emitted receipt references
 the canonical profile and presentation pins, but those bytes were not admitted:
-this validates **cross-process protocol compatibility**, not owner-source
+this validates **cross-repository inter-server HTTP wire compatibility**, not owner-source
 authenticity, behavioral quality, or installed persona. No owner files are
 distributed in this test. The test bearer/session tokens are fixed, obviously
 non-secret strings used only on these temporary local ports.

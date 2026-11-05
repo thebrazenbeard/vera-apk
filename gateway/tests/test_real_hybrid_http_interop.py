@@ -121,7 +121,31 @@ class RealHybridHTTPInteropTests(unittest.TestCase):
         if actual_head != VERA_PR30_HEAD:
             raise RuntimeError("interop evidence pinned to exact v-e-r-a #30 head "
                                f"{VERA_PR30_HEAD}, got {actual_head}")
+        # A matching HEAD does NOT imply that the imported code is unchanged.
+        # Reject staged/unstaged modifications and untracked files capable of
+        # shadowing importable source. Exclude only generated Python bytecode.
+        for flags in (("diff", "--quiet", "HEAD"),
+                      ("diff", "--cached", "--quiet", "HEAD")):
+            probe = subprocess.run(["git", "-C", str(SOURCE_ROOT), *flags,
+                                    "--", "interface/"],
+                                   capture_output=True, text=True, timeout=5)
+            if probe.returncode != 0:
+                raise RuntimeError("v-e-r-a #30 interface source has staged/unstaged "
+                                   "differences or cannot be verified")
+        untracked = subprocess.check_output(
+            ["git", "-C", str(SOURCE_ROOT), "ls-files", "--others",
+             "--exclude-standard", "--", "interface/"],
+            text=True, timeout=5).splitlines()
+        suspicious = [path for path in untracked
+                      if Path(path).suffix != ".pyc" and
+                      "__pycache__" not in Path(path).parts]
+        if suspicious:
+            raise RuntimeError("v-e-r-a #30 contains untracked interface sources: "
+                               + ", ".join(suspicious[:5]))
         sys.path.insert(0, str(SOURCE_ROOT))
+        import interface
+        if Path(interface.__file__).resolve().parent != SOURCE_ROOT / "interface":
+            raise RuntimeError("import resolved a different interface package")
         from interface import persona_profile, server as vera_server
         from interface.loopback_model_bridge import LoopbackModelBridge, create_server
         cls.profile_module = persona_profile
