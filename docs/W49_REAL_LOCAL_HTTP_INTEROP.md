@@ -72,7 +72,7 @@ What is actually checked over HTTP:
 ## Hosted CI execution gate (W50)
 
 The Android workflow explicitly checks out the **public** `thebrazenbeard/v-e-r-a`
-source at immutable commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc`
+source at immutable commit `9857a1d793b8723d53d86f71106872d5bcf1e935`
 with `persist-credentials: false`, into an isolated `_interop/v-e-r-a`
 directory. A separate CI step first checks that `interface/server.py`
 exists and reads back the exact Git `HEAD`, then sets
@@ -91,3 +91,13 @@ exact-head hosted Actions run reports the dedicated integration step completed
 and four tests executed without skipping. Hosted Actions remains inter-server
 HTTP inside one Python process; physical Android, real GGUF, Lappy admission,
 and encrypted production memory remain untested.
+
+### W50 exact-source repin
+
+The W49 commit `f3ce7456a291b8e16d004dd1d4e54a51bb98a4dc` documented above is historical; the current
+opt-in interop test constant and hosted CI checkout are deliberately repinned
+together to `9857a1d793b8723d53d86f71106872d5bcf1e935` after the separate web #30
+single-flight direct-bridge fix. Both repos remain Draft and this tests
+HTTP composability with synthetic replies only. The top-level Android checkout
+also now uses `persist-credentials: false` so imported, pinned web source does
+not run while the APK repository token remains in local Git credential config.
