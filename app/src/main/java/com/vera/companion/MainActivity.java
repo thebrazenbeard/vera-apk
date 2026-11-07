@@ -468,7 +468,7 @@ public final class MainActivity extends Activity {
                     if (!pairingEpoch.isCurrent(epoch)) return;
                     List<String> ids = V2GatewayClient.sessions(url, token);
                     restoredSession = ids.contains(preferredSession) ? preferredSession
-                            : (ids.isEmpty() ? V2GatewayClient.createSession(url,token) : ids.get(0));
+                            : (ids.isEmpty() ? V2GatewayClient.createSession(url,token,pairingEpoch,epoch) : ids.get(0));
                     restoredHistory = V2GatewayClient.history(url,token,restoredSession);
                 }
                 final String sessionReady = restoredSession;
@@ -562,7 +562,7 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             if (!pairingEpoch.isCurrent(epoch)) return;
             try {
-                String id=V2GatewayClient.createSession(url, token);
+                String id=V2GatewayClient.createSession(url, token, pairingEpoch, epoch);
                 runOnUiThread(() -> {
                     if (!pairingEpoch.isCurrent(epoch)) return;
                     try {
@@ -740,7 +740,8 @@ public final class MainActivity extends Activity {
                 // encrypted. It is NOT a claim that the user read a message.
                 for (VeraInboxMessage item : incoming) {
                     if (!pairingEpoch.isCurrent(epoch)) return;
-                    V2GatewayClient.acknowledgeInbox(url, token, item.messageId);
+                    V2GatewayClient.acknowledgeInbox(url, token, item.messageId,
+                            pairingEpoch, epoch);
                 }
             } catch (Exception e) {
                 runOnUiThread(() -> {
