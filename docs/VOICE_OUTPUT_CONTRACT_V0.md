@@ -9,9 +9,9 @@
 
 ## Candidate boundary
 
-1. A **visible, explicit user tap** invokes `VoiceWavePlayer.playFromUserTap(context, wavBytes)`; do not call it from a background observer or automatically after a model inference.
+1. A **visible, explicit user tap on the Android main thread** invokes `VoiceWavePlayer.playFromUserTap(context, wavBytes)`; the primitive rejects other threads. It cannot prove a genuine gesture: the integrating Activity must enforce that binding. Do not call it from a background observer or automatically after a model inference.
 2. `VoiceWav16.parse` accepts only uncompressed RIFF/WAVE PCM **16-bit little-endian**, mono or stereo, sample rate 8–48 kHz, at most 6 MB including headers and at most 30 seconds of PCM; it verifies RIFF and chunk sizes, format arithmetic, and frame alignment. All other payloads fail closed.
-3. The player requests transient Android audio focus, writes the entire PCM payload before playback, plays through `AudioTrack`, then releases native resources at the playback marker. The Activity must also close the returned player on `onStop()`/`onDestroy()`, and immediately when user stops playback. Focus loss closes it.
+3. The player requests transient Android audio focus, uses a one-way `VoicePlaybackGate` to serialize startup with focus-loss/teardown, writes the entire PCM payload before playback, checks completion-marker registration, plays through `AudioTrack`, then releases native resources at the playback marker. The Activity must also close the returned player on `onStop()`/`onDestroy()`, and immediately when user stops playback. Focus loss closes it.
 4. No recording, local file, history, cache, background agent, upload, message, credential, voice model, or Suno audio/reference is included.
 
 ## Compatibility with speech-engine candidate
