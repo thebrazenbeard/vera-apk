@@ -61,7 +61,13 @@ public final class V2GatewayClient {
     }
 
     public static String createSession(String base, String token) throws Exception {
-        String id = post(base,token,"/v2/sessions",new JSONObject(),201).getString("session_id");
+        return createSession(base, token, null, 0L);
+    }
+
+    static String createSession(String base, String token, PairingEpoch pairing,
+                                long generation) throws Exception {
+        String id = post(base,token,"/v2/sessions",new JSONObject(),201,pairing,generation)
+                .getString("session_id");
         if (!id.matches("[A-Za-z0-9_-]{16,128}")) throw new IllegalStateException("Invalid issued session");
         return id;
     }
@@ -148,10 +154,15 @@ public final class V2GatewayClient {
     /** Acknowledges durable device receipt, not human reading of the message. */
     public static void acknowledgeInbox(
             String base, String token, String messageId) throws Exception {
+        acknowledgeInbox(base, token, messageId, null, 0L);
+    }
+
+    static void acknowledgeInbox(String base, String token, String messageId,
+                                 PairingEpoch pairing, long generation) throws Exception {
         if (messageId == null || !messageId.matches("[a-f0-9]{32}"))
             throw new IllegalArgumentException("Invalid acknowledgment id");
         JSONObject response = post(base, token, "/v2/inbox/ack",
-                new JSONObject().put("message_id", messageId), 200);
+                new JSONObject().put("message_id", messageId), 200, pairing, generation);
         if (!VeraInboxMessage.validAck(
                 response.optString("schema"), response.optString("origin"),
                 response.optString("message_id"), messageId,
