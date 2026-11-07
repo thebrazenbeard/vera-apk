@@ -40,9 +40,6 @@ public final class MainActivity extends Activity {
     private final Object inboxLock = new Object();
     private volatile long inboxEpoch = 0L;
     private boolean inboxRequestInFlight;
-    private final Runnable nextInboxCheck = () -> {
-        if (foreground && connected && usingV2) pollVeraInbox();
-    };
     private String v2SessionId = "";
     private boolean usingV2;
     private ScrollView feed;
@@ -50,6 +47,9 @@ public final class MainActivity extends Activity {
     private ImageView backdrop;
     private boolean connected, busy;
     private boolean foreground;
+    private final Runnable nextInboxCheck = () -> {
+        if (foreground && connected && usingV2) pollVeraInbox();
+    };
     private int reconnectAttempts;
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private final Runnable reconnect = () -> {
