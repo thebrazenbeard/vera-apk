@@ -42,12 +42,15 @@ public final class SecureConfig {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key());
         byte[] encrypted = cipher.doFinal(token.getBytes(StandardCharsets.UTF_8));
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+        // Pairing replacement must be durably persisted before reporting success.
+        // An asynchronous apply() could resurrect the previous bearer after a crash.
+        boolean saved = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
                 .putString("url", normalized)
                 .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
                 .putString("secret", Base64.encodeToString(encrypted, Base64.NO_WRAP))
                 .remove("v2_session_id")
-                .putBoolean("connection_wanted", false).apply();
+                .putBoolean("connection_wanted", false).commit();
+        if (!saved) throw new SecurityException("Pairing persistence failed");
     }
 
     public static String endpoint(Context context) {
@@ -85,8 +88,9 @@ public final class SecureConfig {
     public static void setV2SessionId(Context context, String session) {
         if (session == null || !session.matches("[A-Za-z0-9_-]{16,128}"))
             throw new IllegalArgumentException("Invalid server session ID");
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
-                .putString("v2_session_id", session).commit();
+        if (!context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+                .putString("v2_session_id", session).commit())
+            throw new SecurityException("V2 session hint persistence failed");
     }
 
     /** Stable pseudonymous device-session identifier, regenerated on UNPAIR. */
@@ -100,6 +104,9 @@ public final class SecureConfig {
     }
 
     public static void clear(Context context) {
-        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().clear().apply();
+        // UNPAIR cannot claim erasure until credential storage confirms it.
+        if (!context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .edit().clear().commit())
+            throw new SecurityException("Pairing erasure failed");
     }
 }

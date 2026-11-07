@@ -28,9 +28,31 @@ class V2AndroidBoundary(unittest.TestCase):
         code = (ROOT/"MainActivity.java").read_text(encoding="utf-8")
         self.assertIn("V2GatewayClient.enabled(url)",code)
         self.assertIn("V2GatewayClient.history(url,token,restoredSession)",code)
-        self.assertIn("V2GatewayClient.chat(url,token,selected,v2SessionId,requestId,prompt)",code)
+        # Capture pairing mode and session before dispatch, never use mutable UI state
+        # from the worker after an asynchronous pairing replacement.
+        self.assertIn("final boolean v2Request = usingV2;", code)
+        self.assertIn("final String targetSession = v2SessionId;", code)
+        self.assertIn("V2GatewayClient.chat(url,token,selected,targetSession,requestId,prompt)",code)
+        self.assertIn("if (!pairingEpoch.isCurrent(epoch)) return;", code)
         self.assertIn("V2 response uncertain; reconnect to inspect saved history.",code)
         self.assertIn("v2NewChat.setVisibility(v2 ? View.VISIBLE : View.GONE)",code)
+
+    def test_pairing_replacement_and_unpair_clear_old_unsent_draft(self):
+        code = (ROOT/"MainActivity.java").read_text(encoding="utf-8")
+        replaced = code.split("private void save()", 1)[1].split("private void unpair()", 1)[0]
+        erased = code.split("private void unpair()", 1)[1].split("private void connect()", 1)[0]
+        self.assertIn('input.setText("");', replaced)
+        self.assertIn('input.setText("");', erased)
+
+    def test_v2_session_resume_hint_must_be_persisted_before_success(self):
+        credentials = (ROOT/"SecureConfig.java").read_text(encoding="utf-8")
+        connect_ui = (ROOT/"MainActivity.java").read_text(encoding="utf-8")
+        method = credentials.split("public static void setV2SessionId(", 1)[1].split(
+            "public static String sessionId(", 1
+        )[0]
+        self.assertIn('throw new SecurityException("V2 session hint persistence failed")', method)
+        self.assertIn("if (!context.getSharedPreferences(", method)
+        self.assertIn("catch (SecurityException storageFailure)", connect_ui)
 
 if __name__ == "__main__":
     unittest.main()

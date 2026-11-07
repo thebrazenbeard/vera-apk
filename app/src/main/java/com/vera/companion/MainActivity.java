@@ -38,7 +38,7 @@ public final class MainActivity extends Activity {
     private TextView inboxStatus;
     private final HashSet<String> shownInboxIds = new HashSet<>();
     private final Object inboxLock = new Object();
-    private volatile long inboxEpoch = 0L;
+    private final PairingEpoch pairingEpoch = new PairingEpoch();
     private boolean inboxRequestInFlight;
     private String v2SessionId = "";
     private boolean usingV2;
@@ -321,20 +321,25 @@ public final class MainActivity extends Activity {
     }
 
     private void save() {
+        final long beforeSave = pairingEpoch.capture();
         try {
             String nextEndpoint = EndpointPolicy.normalize(endpoint.getText().toString());
             String nextToken = secret.getText().toString().trim();
             if (!nextToken.matches("[A-Za-z0-9_-]{32,128}"))
                 throw new IllegalArgumentException("Invalid pairing token");
             synchronized (inboxLock) {
+                pairingEpoch.invalidate();
                 SecureConfig.save(this, nextEndpoint, nextToken);
                 SecureVeraInbox.clear(this);
-                inboxEpoch++;
             }
             inboxHandlerReset();
+            busy = false;
             secret.setText("");
+            input.setText(""); // A prior pairing's unsent draft must not cross credentials.
             connected = false;
             history.clear();
+            transcript.removeAllViews();
+            append("SYSTEM", "Pairing replaced; previous private transcript hidden.");
             usingV2 = false;
             v2SessionId = "";
             v2NewChat.setVisibility(View.GONE);
@@ -343,24 +348,66 @@ public final class MainActivity extends Activity {
             connectionPanel.setVisibility(View.GONE);
             connectionToggle.setText("CONNECTION SETTINGS  ▾");
             state("Saved securely. Tap CONNECT.");
-        } catch (Exception e) { state("Invalid endpoint or token"); }
+        } catch (Exception e) {
+            if (!pairingEpoch.isCurrent(beforeSave)) {
+                // Credential write or inbox clear may have partially succeeded.
+                // Never keep a previous pairing's live UI after an uncertain change.
+                busy = false;
+                connected = false;
+                usingV2 = false;
+                v2SessionId = "";
+                SecureConfig.setConnectionWanted(this, false);
+                retryHandler.removeCallbacks(reconnect);
+                inboxHandlerReset();
+                history.clear();
+                input.setText("");
+                transcript.removeAllViews();
+                append("SYSTEM", "Pairing change incomplete; private session disconnected.");
+                v2NewChat.setVisibility(View.GONE);
+                inboxStatus.setVisibility(View.GONE);
+                inboxRefresh.setVisibility(View.GONE);
+                state("Pairing storage failed. Verify device storage before reconnecting.");
+            } else {
+                state("Invalid endpoint or token");
+            }
+        }
     }
 
     private void unpair() {
         try {
             synchronized (inboxLock) {
+                pairingEpoch.invalidate();
+                SecureConfig.clear(this); // Erase bearer first, even if cache clear fails.
                 SecureVeraInbox.clear(this);
-                SecureConfig.clear(this);
-                inboxEpoch++;
             }
         } catch (Exception e) {
+            // One storage operation may have succeeded while another failed.
+            // Fail closed and do not retain a callable prior pairing.
+            busy = false;
+            connected = false;
+            usingV2 = false;
+            v2SessionId = "";
+            SecureConfig.setConnectionWanted(this, false);
+            retryHandler.removeCallbacks(reconnect);
+            inboxHandlerReset();
+            history.clear();
+            input.setText("");
+            transcript.removeAllViews();
+            append("SYSTEM", "Unpair incomplete; private session disconnected.");
+            v2NewChat.setVisibility(View.GONE);
+            inboxStatus.setVisibility(View.GONE);
+            inboxRefresh.setVisibility(View.GONE);
             state("Private pairing could not be cleared; review device storage.");
             return;
         }
         inboxHandlerReset();
+        busy = false;
         endpoint.setText("");
         secret.setText("");
+        input.setText("");
         history.clear();
+        transcript.removeAllViews();
+        append("SYSTEM", "Device unpaired; previous private transcript hidden.");
         usingV2 = false;
         v2SessionId = "";
         v2NewChat.setVisibility(View.GONE);
@@ -388,22 +435,27 @@ public final class MainActivity extends Activity {
 
     private void attemptConnection() {
         if (busy || !SecureConfig.wantsConnection(this)) return;
+        final long epoch = pairingEpoch.capture();
+        final String url = SecureConfig.endpoint(this);
+        final String preferredSession = SecureConfig.v2SessionId(this);
+        final String token;
+        try { token = SecureConfig.token(this); }
+        catch (Exception e) { state("Private pairing unavailable"); return; }
         busy = true;
         connected = false;
         state("Checking local gateway...");
-        String url = SecureConfig.endpoint(this);
         worker.execute(() -> {
+            if (!pairingEpoch.isCurrent(epoch)) return;
             try {
                 boolean v2 = V2GatewayClient.enabled(url);
-                String token = SecureConfig.token(this);
                 List<String> available = v2 ? V2GatewayClient.models(url, token)
                         : GatewayClient.models(url, token);
                 String restoredSession = "";
                 JSONArray restoredHistory = null;
                 if (v2) {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     List<String> ids = V2GatewayClient.sessions(url, token);
-                    String preferred = SecureConfig.v2SessionId(this);
-                    restoredSession = ids.contains(preferred) ? preferred
+                    restoredSession = ids.contains(preferredSession) ? preferredSession
                             : (ids.isEmpty() ? V2GatewayClient.createSession(url,token) : ids.get(0));
                     restoredHistory = V2GatewayClient.history(url,token,restoredSession);
                 }
@@ -411,6 +463,7 @@ public final class MainActivity extends Activity {
                 final JSONArray recovered = restoredHistory;
                 if (available.isEmpty()) throw new IllegalStateException("No models");
                 runOnUiThread(() -> {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
                             android.R.layout.simple_spinner_item, available) {
                         @Override public View getView(int position, View convertView, ViewGroup parent) {
@@ -426,12 +479,20 @@ public final class MainActivity extends Activity {
                     models.setAdapter(adapter);
                     int matching = ModelPreference.choose(available, previous);
                     if (matching >= 0) models.setSelection(matching);
-                    usingV2 = v2;
                     if (v2) {
+                        try {
+                            SecureConfig.setV2SessionId(this, sessionReady);
+                        } catch (SecurityException storageFailure) {
+                            busy = false;
+                            connected = false;
+                            usingV2 = false;
+                            state("Private session could not be saved; check device storage.");
+                            return;
+                        }
                         v2SessionId = sessionReady;
-                        SecureConfig.setV2SessionId(this, sessionReady);
                         renderV2History(recovered);
                     }
+                    usingV2 = v2;
                     v2NewChat.setVisibility(v2 ? View.VISIBLE : View.GONE);
                     inboxStatus.setVisibility(v2 ? View.VISIBLE : View.GONE);
                     inboxRefresh.setVisibility(v2 ? View.VISIBLE : View.GONE);
@@ -449,6 +510,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 boolean unauthorized = ConnectionPolicy.requiresPairing(e.getMessage());
                 runOnUiThread(() -> {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     busy = false;
                     if (unauthorized) SecureConfig.setConnectionWanted(this, false);
                     state(unauthorized ? "Pairing rejected. Check your token."
@@ -478,15 +540,27 @@ public final class MainActivity extends Activity {
 
     private void newSecureChat() {
         if (!connected || busy || !usingV2) return;
+        final long epoch = pairingEpoch.capture();
+        final String url = SecureConfig.endpoint(this);
+        final String token;
+        try { token = SecureConfig.token(this); }
+        catch (Exception e) { state("Private pairing unavailable"); return; }
         busy = true;
         state("Creating owner-scoped private conversation...");
-        String url = SecureConfig.endpoint(this);
         worker.execute(() -> {
+            if (!pairingEpoch.isCurrent(epoch)) return;
             try {
-                String id=V2GatewayClient.createSession(url,SecureConfig.token(this));
+                String id=V2GatewayClient.createSession(url, token);
                 runOnUiThread(() -> {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
+                    try {
+                        SecureConfig.setV2SessionId(this, id);
+                    } catch (SecurityException storageFailure) {
+                        busy = false;
+                        state("Server created session, but device could not save its rejoin hint.");
+                        return;
+                    }
                     v2SessionId=id;
-                    SecureConfig.setV2SessionId(this,id);
                     transcript.removeAllViews();
                     history.clear();
                     append("VERA","New private conversation opened");
@@ -495,7 +569,11 @@ public final class MainActivity extends Activity {
                     reloadPrivateInbox();
                 });
             } catch (Exception e) {
-                runOnUiThread(() -> { busy=false; state("V2 session creation refused"); });
+                runOnUiThread(() -> {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
+                    busy=false;
+                    state("V2 session creation refused");
+                });
             }
         });
     }
@@ -518,20 +596,28 @@ public final class MainActivity extends Activity {
                 messages.put(history.get(i));
             messages.put(new JSONObject().put("role", "user").put("content", prompt));
         } catch (Exception e) { state("Invalid session"); return; }
-        String url = SecureConfig.endpoint(this);
+        final long epoch = pairingEpoch.capture();
+        final String url = SecureConfig.endpoint(this);
+        final boolean v2Request = usingV2;
+        final String targetSession = v2SessionId;
+        final String legacySession = v2Request ? "" : SecureConfig.sessionId(this);
+        final String token;
+        try { token = SecureConfig.token(this); }
+        catch (Exception e) { state("Private pairing unavailable"); return; }
         busy = true;
         append("YOU", prompt);
         input.setText("");
         state("Message queued - Vera is generating on " + selected + "...");
         final String requestId = java.util.UUID.randomUUID().toString().replace("-", "");
         worker.execute(() -> {
+            if (!pairingEpoch.isCurrent(epoch)) return;
             try {
-                String token = SecureConfig.token(this);
-                String reply = usingV2
-                        ? V2GatewayClient.chat(url,token,selected,v2SessionId,requestId,prompt)
+                String reply = v2Request
+                        ? V2GatewayClient.chat(url,token,selected,targetSession,requestId,prompt)
                         : GatewayClient.chat(url,token,selected,messages,
-                            SecureConfig.sessionId(this),requestId);
+                            legacySession,requestId);
                 runOnUiThread(() -> {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     try {
                         history.add(new JSONObject().put("role", "user").put("content", prompt));
                         history.add(new JSONObject().put("role", "assistant").put("content", reply));
@@ -543,6 +629,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 boolean authenticationLost = ConnectionPolicy.requiresPairing(e.getMessage());
                 runOnUiThread(() -> {
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     busy = false;
                     if (authenticationLost) {
                         connected = false;
@@ -550,11 +637,11 @@ public final class MainActivity extends Activity {
                         retryHandler.removeCallbacks(reconnect);
                     }
                     if (input.getText().toString().isEmpty()) input.setText(prompt);
-                    append("SYSTEM", usingV2
+                    append("SYSTEM", v2Request
                             ? "Delivery uncertain. Draft restored; check encrypted history before retry."
                             : "Message not delivered. Your draft is restored.");
                     state(authenticationLost ? "Pairing rejected; reconnect to retry."
-                            : usingV2 ? "V2 response uncertain; reconnect to inspect saved history."
+                            : v2Request ? "V2 response uncertain; reconnect to inspect saved history."
                             : "Message not delivered; retry when ready.");
                 });
             }
@@ -586,22 +673,25 @@ public final class MainActivity extends Activity {
 
     private void reloadPrivateInbox() {
         if (!foreground || !connected || !usingV2) return;
-        final long epoch = inboxEpoch;
+        final long epoch = pairingEpoch.capture();
         final String url = SecureConfig.endpoint(this);
+        final String token;
+        try { token = SecureConfig.token(this); }
+        catch (Exception e) { inboxStatus.setText("VERA INBOX  /  PAIRING UNAVAILABLE"); return; }
         worker.execute(() -> {
+            if (!pairingEpoch.isCurrent(epoch)) return;
             try {
-                String token = SecureConfig.token(this);
                 List<VeraInboxMessage> cached;
                 synchronized (inboxLock) {
-                    if (inboxEpoch != epoch) return;
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     cached = SecureVeraInbox.read(this, url, token);
                 }
                 runOnUiThread(() -> {
-                    if (inboxEpoch == epoch) showStoredInbox(cached);
+                    if (pairingEpoch.isCurrent(epoch)) showStoredInbox(cached);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    if (inboxEpoch == epoch && inboxStatus != null)
+                    if (pairingEpoch.isCurrent(epoch) && inboxStatus != null)
                         inboxStatus.setText("VERA INBOX  /  ENCRYPTED STORAGE UNAVAILABLE");
                 });
             }
@@ -610,40 +700,43 @@ public final class MainActivity extends Activity {
 
     private void pollVeraInbox() {
         if (!foreground || !connected || !usingV2 || inboxRequestInFlight) return;
-        inboxRequestInFlight = true;
-        final long epoch = inboxEpoch;
+        final long epoch = pairingEpoch.capture();
         final String url = SecureConfig.endpoint(this);
+        final String token;
+        try { token = SecureConfig.token(this); }
+        catch (Exception e) { inboxStatus.setText("VERA INBOX  /  PAIRING UNAVAILABLE"); return; }
+        inboxRequestInFlight = true;
         inboxStatus.setText("VERA INBOX  /  CHECKING SECURE DELIVERY...");
         worker.execute(() -> {
+            if (!pairingEpoch.isCurrent(epoch)) return;
             try {
-                String token = SecureConfig.token(this);
                 List<VeraInboxMessage> incoming = V2GatewayClient.inbox(url, token);
                 List<VeraInboxMessage> cached;
                 synchronized (inboxLock) {
-                    if (epoch != inboxEpoch) return;
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     for (VeraInboxMessage item : incoming)
                         SecureVeraInbox.record(this, url, token, item);
                     cached = SecureVeraInbox.read(this, url, token);
                 }
                 runOnUiThread(() -> {
-                    if (epoch != inboxEpoch) return;
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     showStoredInbox(cached);
                     inboxStatus.setText("VERA PRIVATE INBOX  /  SECURE V2 CHECKED");
                 });
                 // Acknowledge ONLY after authenticated receipt was durably
                 // encrypted. It is NOT a claim that the user read a message.
                 for (VeraInboxMessage item : incoming) {
-                    if (epoch != inboxEpoch) return;
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     V2GatewayClient.acknowledgeInbox(url, token, item.messageId);
                 }
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    if (epoch != inboxEpoch) return;
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     inboxStatus.setText("VERA INBOX  /  ROUTE OR PAIRING UNAVAILABLE");
                 });
             } finally {
                 runOnUiThread(() -> {
-                    if (epoch != inboxEpoch) return;
+                    if (!pairingEpoch.isCurrent(epoch)) return;
                     inboxRequestInFlight = false;
                     scheduleInboxCheck(45000);
                 });
@@ -670,6 +763,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onDestroy() {
+        pairingEpoch.invalidate(); // Discard callbacks after Activity disposal.
         retryHandler.removeCallbacks(reconnect);
         retryHandler.removeCallbacks(nextInboxCheck);
         worker.shutdownNow();
