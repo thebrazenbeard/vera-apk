@@ -20,10 +20,16 @@ public final class V2GatewayClient {
 
     private static JSONObject post(String base, String token, String path, JSONObject payload,
                                    int status) throws Exception {
+        return post(base, token, path, payload, status, null, 0L);
+    }
+
+    private static JSONObject post(String base, String token, String path, JSONObject payload,
+                                   int status, PairingEpoch pairing, long generation)
+            throws Exception {
         if (!enabled(base)) throw new IllegalArgumentException("V2 requires dedicated :8444 endpoint");
         if (payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 8192)
             throw new IllegalArgumentException("V2 request exceeds limit");
-        return GatewayClient.request(base, token, path, payload, status);
+        return GatewayClient.request(base, token, path, payload, status, pairing, generation);
     }
 
     public static List<String> models(String base, String token) throws Exception {
@@ -79,6 +85,12 @@ public final class V2GatewayClient {
 
     public static String chat(String base, String token, String model,
                               String sessionId, String requestId, String text) throws Exception {
+        return chat(base, token, model, sessionId, requestId, text, null, 0L);
+    }
+
+    static String chat(String base, String token, String model,
+                       String sessionId, String requestId, String text,
+                       PairingEpoch pairing, long generation) throws Exception {
         if (!sessionId.matches("[A-Za-z0-9_-]{16,128}")
                 || !requestId.matches("[A-Za-z0-9_-]{16,128}")
                 || text.isEmpty() || text.length()>4096 || model.length()>128)
@@ -86,7 +98,7 @@ public final class V2GatewayClient {
         JSONObject body = new JSONObject()
                 .put("session_id",sessionId).put("request_id",requestId)
                 .put("model",model).put("content",text);
-        JSONObject result=post(base,token,"/v2/chat",body,200);
+        JSONObject result=post(base,token,"/v2/chat",body,200,pairing,generation);
         if (!"local".equals(result.optString("node"))
                 || !"response_only".equals(result.optString("mode"))
                 || !model.equals(result.optString("model")))

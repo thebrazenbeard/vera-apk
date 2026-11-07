@@ -32,7 +32,8 @@ class V2AndroidBoundary(unittest.TestCase):
         # from the worker after an asynchronous pairing replacement.
         self.assertIn("final boolean v2Request = usingV2;", code)
         self.assertIn("final String targetSession = v2SessionId;", code)
-        self.assertIn("V2GatewayClient.chat(url,token,selected,targetSession,requestId,prompt)",code)
+        self.assertIn("V2GatewayClient.chat(url,token,selected,targetSession,requestId,prompt,",code)
+        self.assertIn("pairingEpoch,epoch)",code)
         self.assertIn("if (!pairingEpoch.isCurrent(epoch)) return;", code)
         self.assertIn("V2 response uncertain; reconnect to inspect saved history.",code)
         self.assertIn("v2NewChat.setVisibility(v2 ? View.VISIBLE : View.GONE)",code)
@@ -53,6 +54,22 @@ class V2AndroidBoundary(unittest.TestCase):
         self.assertIn('throw new SecurityException("V2 session hint persistence failed")', method)
         self.assertIn("if (!context.getSharedPreferences(", method)
         self.assertIn("catch (SecurityException storageFailure)", connect_ui)
+
+    def test_http_post_write_has_atomic_pairing_gate(self):
+        transport = (ROOT/"GatewayClient.java").read_text(encoding="utf-8")
+        epoch = (ROOT/"PairingEpoch.java").read_text(encoding="utf-8")
+        self.assertIn("pairing.sendIfCurrent(generation, () -> {", transport)
+        self.assertIn("try (OutputStream out = connection.getOutputStream())", transport)
+        self.assertIn("synchronized void sendIfCurrent", epoch)
+        self.assertIn("synchronized void invalidate()", epoch)
+        self.assertIn("Pairing revoked before dispatch", epoch)
+
+    def test_unpair_revokes_keystore_and_syncs_reconnection_intent(self):
+        credentials = (ROOT/"SecureConfig.java").read_text(encoding="utf-8")
+        self.assertIn("store.deleteEntry(ALIAS)", credentials)
+        self.assertIn("revokedInProcess = true;", credentials)
+        self.assertIn('putBoolean("connection_wanted", wanted).commit()', credentials)
+        self.assertIn("Pairing erasure incomplete; reboot safety unverified", credentials)
 
 if __name__ == "__main__":
     unittest.main()

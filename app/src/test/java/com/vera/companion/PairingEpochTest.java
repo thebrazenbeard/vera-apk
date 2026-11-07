@@ -29,6 +29,69 @@ public final class PairingEpochTest {
         assertFalse("old response must not render after UNPAIR", epoch.isCurrent(captured));
     }
 
+    @Test public void unpairBetweenWorkerCheckAndTransportWriteRevokesSend()
+            throws Exception {
+        PairingEpoch epoch = new PairingEpoch();
+        long captured = epoch.capture();
+        CountDownLatch checked = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        AtomicInteger sent = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        Thread worker = new Thread(() -> {
+            if (!epoch.isCurrent(captured)) return;
+            checked.countDown();
+            try {
+                if (!resume.await(5, TimeUnit.SECONDS)) return;
+                epoch.sendIfCurrent(captured, () -> sent.incrementAndGet());
+            } catch (java.util.concurrent.CancellationException revoked) {
+                rejected.incrementAndGet();
+            } catch (Exception e) { throw new AssertionError(e); }
+        });
+        worker.start();
+        assertTrue(checked.await(5, TimeUnit.SECONDS));
+        epoch.invalidate(); // UNPAIR before the HTTPS write gate
+        resume.countDown();
+        worker.join(5000);
+        assertFalse(worker.isAlive());
+        assertEquals(0, sent.get());
+        assertEquals(1, rejected.get());
+    }
+
+    @Test public void alreadyWritingRequestLinearizesBeforeUnpair() throws Exception {
+        PairingEpoch epoch = new PairingEpoch();
+        long captured = epoch.capture();
+        CountDownLatch sending = new CountDownLatch(1);
+        CountDownLatch finishSend = new CountDownLatch(1);
+        CountDownLatch revokeStarted = new CountDownLatch(1);
+        CountDownLatch revokeDone = new CountDownLatch(1);
+        Thread worker = new Thread(() -> {
+            try {
+                epoch.sendIfCurrent(captured, () -> {
+                    sending.countDown();
+                    if (!finishSend.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("test send timeout");
+                });
+            } catch (Exception e) { throw new AssertionError(e); }
+        });
+        worker.start();
+        assertTrue(sending.await(5, TimeUnit.SECONDS));
+        Thread revoker = new Thread(() -> {
+            revokeStarted.countDown();
+            epoch.invalidate();
+            revokeDone.countDown();
+        });
+        revoker.start();
+        assertTrue(revokeStarted.await(5, TimeUnit.SECONDS));
+        assertFalse("UNPAIR linearized during active transport write",
+                revokeDone.await(50, TimeUnit.MILLISECONDS));
+        finishSend.countDown();
+        worker.join(5000);
+        revoker.join(5000);
+        assertFalse(worker.isAlive());
+        assertFalse(revoker.isAlive());
+        assertFalse(epoch.isCurrent(captured));
+    }
+
     @Test public void delayedNetworkCompletionIsRejectedAfterPairingReplacement()
             throws Exception {
         PairingEpoch epoch = new PairingEpoch();

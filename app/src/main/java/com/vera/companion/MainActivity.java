@@ -356,7 +356,7 @@ public final class MainActivity extends Activity {
                 connected = false;
                 usingV2 = false;
                 v2SessionId = "";
-                SecureConfig.setConnectionWanted(this, false);
+                suppressAutoReconnect();
                 retryHandler.removeCallbacks(reconnect);
                 inboxHandlerReset();
                 history.clear();
@@ -387,7 +387,7 @@ public final class MainActivity extends Activity {
             connected = false;
             usingV2 = false;
             v2SessionId = "";
-            SecureConfig.setConnectionWanted(this, false);
+            suppressAutoReconnect();
             retryHandler.removeCallbacks(reconnect);
             inboxHandlerReset();
             history.clear();
@@ -418,9 +418,21 @@ public final class MainActivity extends Activity {
         state("Pairing erased from this device");
     }
 
+    private void suppressAutoReconnect() {
+        try { SecureConfig.setConnectionWanted(this, false); }
+        catch (SecurityException ignored) {
+            // The Activity still disconnects; both persistent stores could have failed.
+            // Do not assert that a later process launch is guaranteed safe.
+        }
+    }
+
     private void connect() {
         if (busy) return;
-        SecureConfig.setConnectionWanted(this, true);
+        try { SecureConfig.setConnectionWanted(this, true); }
+        catch (SecurityException e) {
+            state("Connection preference could not be saved; check device storage.");
+            return;
+        }
         reconnectAttempts = 0;
         retryHandler.removeCallbacks(reconnect);
         attemptConnection();
@@ -512,7 +524,7 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (!pairingEpoch.isCurrent(epoch)) return;
                     busy = false;
-                    if (unauthorized) SecureConfig.setConnectionWanted(this, false);
+                    if (unauthorized) suppressAutoReconnect();
                     state(unauthorized ? "Pairing rejected. Check your token."
                             : "Gateway unavailable; retrying while app is open.");
                     if (!unauthorized) scheduleReconnect();
@@ -613,9 +625,10 @@ public final class MainActivity extends Activity {
             if (!pairingEpoch.isCurrent(epoch)) return;
             try {
                 String reply = v2Request
-                        ? V2GatewayClient.chat(url,token,selected,targetSession,requestId,prompt)
+                        ? V2GatewayClient.chat(url,token,selected,targetSession,requestId,prompt,
+                            pairingEpoch,epoch)
                         : GatewayClient.chat(url,token,selected,messages,
-                            legacySession,requestId);
+                            legacySession,requestId,pairingEpoch,epoch);
                 runOnUiThread(() -> {
                     if (!pairingEpoch.isCurrent(epoch)) return;
                     try {
@@ -633,7 +646,7 @@ public final class MainActivity extends Activity {
                     busy = false;
                     if (authenticationLost) {
                         connected = false;
-                        SecureConfig.setConnectionWanted(this, false);
+                        suppressAutoReconnect();
                         retryHandler.removeCallbacks(reconnect);
                     }
                     if (input.getText().toString().isEmpty()) input.setText(prompt);
