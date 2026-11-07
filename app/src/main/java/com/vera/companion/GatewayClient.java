@@ -46,10 +46,13 @@ public final class GatewayClient {
                 if (pairing == null) {
                     try (OutputStream out = connection.getOutputStream()) { out.write(payload); }
                 } else {
-                    // This gate owns the final pre-send check and actual HTTPS write.
-                    // UNPAIR cannot linearize midway through a protected dispatch.
-                    pairing.sendIfCurrent(generation, () -> {
+                    // Short admission gate; no UI monitor is held over blocking I/O.
+                    // UNPAIR marks this permit revoked and aborts this connection
+                    // asynchronously; bytes already issued cannot be recalled.
+                    pairing.sendIfCurrent(generation, connection::disconnect, permit -> {
+                        permit.requireActive();
                         try (OutputStream out = connection.getOutputStream()) {
+                            permit.requireActive();
                             out.write(payload);
                         }
                     });
