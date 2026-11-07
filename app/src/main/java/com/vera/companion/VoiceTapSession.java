@@ -23,7 +23,17 @@ final class VoiceTapSession implements AutoCloseable {
     synchronized boolean onVisibleTap(boolean visible) {
         if (!visible || closed) return false;
         closeActive();
-        active = Objects.requireNonNull(launcher.start(), "Playback launcher returned null");
+        // Closing the previous handle can synchronously reenter close(). A
+        // lifecycle close wins even when it happens during this tap's callback.
+        if (closed) return false;
+        PlaybackHandle started = Objects.requireNonNull(
+                launcher.start(), "Playback launcher returned null");
+        // Likewise a launcher can synchronously trigger teardown before it returns.
+        if (closed) {
+            started.close();
+            return false;
+        }
+        active = started;
         return true;
     }
 

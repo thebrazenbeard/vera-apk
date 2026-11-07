@@ -90,4 +90,31 @@ public final class VoiceTapSessionTest {
         assertEquals(1, releases.get());
         assertFalse(session.onVisibleTap(true));
     }
+
+    @Test public void priorHandleReentrantCloseCancelsReplacement() {
+        final VoiceTapSession[] reference = new VoiceTapSession[1];
+        AtomicInteger launches = new AtomicInteger();
+        VoiceTapSession session = new VoiceTapSession(() -> {
+            launches.incrementAndGet();
+            return reference[0]::close;
+        });
+        reference[0] = session;
+        assertTrue(session.onVisibleTap(true));
+        assertFalse("reentrant stop must win", session.onVisibleTap(true));
+        assertFalse(session.onVisibleTap(true));
+        assertEquals(1, launches.get());
+    }
+
+    @Test public void launcherReentrantCloseReleasesReturnedHandle() {
+        final VoiceTapSession[] reference = new VoiceTapSession[1];
+        AtomicInteger releases = new AtomicInteger();
+        VoiceTapSession session = new VoiceTapSession(() -> {
+            reference[0].close();
+            return releases::incrementAndGet;
+        });
+        reference[0] = session;
+        assertFalse("stop during launch must win", session.onVisibleTap(true));
+        assertFalse(session.onVisibleTap(true));
+        assertEquals(1, releases.get());
+    }
 }
