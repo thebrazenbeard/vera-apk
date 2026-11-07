@@ -194,6 +194,9 @@ def main():
     p.add_argument("--journal-key-file",type=Path,required=True)
     p.add_argument("--stm-root",type=Path,required=True)
     p.add_argument("--port",type=int,default=18781)
+    p.add_argument("--inbox-db",type=Path)
+    p.add_argument("--inbox-key-file",type=Path)
+    p.add_argument("--inbox-approval-key-file",type=Path)
     p.add_argument("action", choices=("serve","provision","revoke"))
     p.add_argument("--owner-id")
     p.add_argument("--label")
@@ -212,7 +215,26 @@ def main():
         print("REVOKED",store.revoke(args.device_id))
     else:
         if not 1024 <= args.port <= 65535: p.error("invalid port")
-        with DeviceServer(("127.0.0.1",args.port),store) as server:
+        inbox_inputs=(args.inbox_db,args.inbox_key_file,args.inbox_approval_key_file)
+        if any(x is not None for x in inbox_inputs) and not all(x is not None for x in inbox_inputs):
+            p.error("inbox requires db, encryption key and separate approval key")
+        if all(x is not None for x in inbox_inputs):
+            from owner_outbox_v0 import EncryptedDeviceOutbox
+            from device_inbox_v2 import InboxDeviceServer
+            if any(x.is_symlink() for x in inbox_inputs):
+                p.error("inbox symlink inputs refused")
+            try:
+                encryption=args.inbox_key_file.read_bytes()
+                approval=args.inbox_approval_key_file.read_bytes()
+                if len(encryption)!=32 or len(approval)<32 or len(approval)>128:
+                    raise ValueError("invalid key length")
+                outbox=EncryptedDeviceOutbox(args.inbox_db,encryption,approval,store.authenticate)
+            except (OSError,ValueError) as exc:
+                p.error("inbox configuration unavailable")
+            server_context=InboxDeviceServer(("127.0.0.1",args.port),store,outbox)
+        else:
+            server_context=DeviceServer(("127.0.0.1",args.port),store)
+        with server_context as server:
             print("Vera V2 device gateway listening loopback-only",args.port,flush=True)
             server.serve_forever(poll_interval=0.2)
 
