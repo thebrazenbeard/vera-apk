@@ -51,6 +51,17 @@ class OutboxTests(unittest.TestCase):
         self.assertEqual(mid,replay["message_id"])
         self.assertTrue(replay["replayed"])
         with self.assertRaises(Conflict):self.put(self.env(body="changed"))
+    def test_reenqueue_after_acked_preserves_acked_receipt(self):
+        first=self.put()
+        mid=first["message_id"]
+        self.box.poll("a",now=NOW)
+        self.box.ack("a",mid,now=NOW+1)
+        replay=self.put()
+        self.assertEqual(replay["message_id"],mid)
+        self.assertEqual(replay["state"],"DEVICE_ACK_CLAIM")
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(self.box.poll("a",now=NOW+2),[])
+
     def test_foreign_and_revoked_token(self):
         mid=self.put()["message_id"]
         self.assertEqual(self.box.poll("b",now=NOW),[])
