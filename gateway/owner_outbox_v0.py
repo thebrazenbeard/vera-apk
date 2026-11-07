@@ -119,11 +119,11 @@ class EncryptedDeviceOutbox:
             raise AccessDenied("host approval invalid")
         digest=sha256(raw).digest()
         with self._tx() as db:
-            prior=db.execute("SELECT message_id,proposal_hash FROM outbox WHERE owner_id=? AND device_id=? AND request_id=?",
+            prior=db.execute("SELECT message_id,proposal_hash,acked_at FROM outbox WHERE owner_id=? AND device_id=? AND request_id=?",
                              (owner,device,request)).fetchone()
             if prior:
                 if not hmac.compare_digest(prior[1],digest): raise Conflict("request ID reused with different content")
-                return {"message_id":prior[0],"state":"QUEUED_UNSENT","replayed":True}
+                return {"message_id":prior[0],"state":"DEVICE_ACK_CLAIM" if prior[2] is not None else "QUEUED_UNSENT","replayed":True}
             n=db.execute("SELECT COUNT(*) FROM outbox WHERE owner_id=? AND device_id=? AND acked_at IS NULL AND expires_at>?",
                          (owner,device,now)).fetchone()[0]
             if n>=32: raise Conflict("recipient queue full")
