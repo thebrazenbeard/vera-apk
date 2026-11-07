@@ -55,14 +55,24 @@ class V2AndroidBoundary(unittest.TestCase):
         self.assertIn("if (!context.getSharedPreferences(", method)
         self.assertIn("catch (SecurityException storageFailure)", connect_ui)
 
-    def test_http_post_write_has_atomic_pairing_gate(self):
+    def test_http_post_write_has_cancelable_short_admission_gate(self):
         transport = (ROOT/"GatewayClient.java").read_text(encoding="utf-8")
         epoch = (ROOT/"PairingEpoch.java").read_text(encoding="utf-8")
-        self.assertIn("pairing.sendIfCurrent(generation, () -> {", transport)
+        self.assertIn("pairing.sendIfCurrent(generation, connection::disconnect", transport)
+        self.assertIn("permit.requireActive();", transport)
         self.assertIn("try (OutputStream out = connection.getOutputStream())", transport)
-        self.assertIn("synchronized void sendIfCurrent", epoch)
-        self.assertIn("synchronized void invalidate()", epoch)
+        self.assertIn("synchronized (this)", epoch)
+        self.assertNotIn("synchronized void sendIfCurrent", epoch)
+        self.assertNotIn("synchronized void invalidate()", epoch)
         self.assertIn("Pairing revoked before dispatch", epoch)
+
+    def test_session_creation_and_inbox_ack_post_share_revocation_permit(self):
+        client = (ROOT/"V2GatewayClient.java").read_text(encoding="utf-8")
+        ui = (ROOT/"MainActivity.java").read_text(encoding="utf-8")
+        self.assertIn('post(base,token,"/v2/sessions",new JSONObject(),201,pairing,generation)', client)
+        self.assertIn('new JSONObject().put("message_id", messageId), 200, pairing, generation)', client)
+        self.assertIn('V2GatewayClient.createSession(url, token, pairingEpoch, epoch)', ui)
+        self.assertIn('V2GatewayClient.acknowledgeInbox(url, token, item.messageId,', ui)
 
     def test_unpair_revokes_keystore_and_syncs_reconnection_intent(self):
         credentials = (ROOT/"SecureConfig.java").read_text(encoding="utf-8")
