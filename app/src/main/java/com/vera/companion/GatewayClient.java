@@ -17,6 +17,12 @@ public final class GatewayClient {
 
     static JSONObject request(String base, String token, String path, JSONObject body,
                               int expectedStatus) throws Exception {
+        return request(base, token, path, body, expectedStatus, null, 0L);
+    }
+
+    static JSONObject request(String base, String token, String path, JSONObject body,
+                              int expectedStatus, PairingEpoch pairing, long generation)
+            throws Exception {
         String endpoint = EndpointPolicy.normalize(base);
         if (token == null || !token.matches("[A-Za-z0-9_-]{32,128}")) {
             throw new IllegalArgumentException("Pairing token required");
@@ -37,7 +43,20 @@ public final class GatewayClient {
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");
                 connection.setFixedLengthStreamingMode(payload.length);
-                try (OutputStream out = connection.getOutputStream()) { out.write(payload); }
+                if (pairing == null) {
+                    try (OutputStream out = connection.getOutputStream()) { out.write(payload); }
+                } else {
+                    // Short admission gate; no UI monitor is held over blocking I/O.
+                    // UNPAIR marks this permit revoked and aborts this connection
+                    // asynchronously; bytes already issued cannot be recalled.
+                    pairing.sendIfCurrent(generation, connection::disconnect, permit -> {
+                        permit.requireActive();
+                        try (OutputStream out = connection.getOutputStream()) {
+                            permit.requireActive();
+                            out.write(payload);
+                        }
+                    });
+                }
             }
             int status = connection.getResponseCode();
             if (status != expectedStatus) throw new IllegalStateException("Gateway returned HTTP " + status);
@@ -75,12 +94,18 @@ public final class GatewayClient {
 
     public static String chat(String base, String token, String model, JSONArray history,
                               String sessionId, String requestId) throws Exception {
+        return chat(base, token, model, history, sessionId, requestId, null, 0L);
+    }
+
+    static String chat(String base, String token, String model, JSONArray history,
+                       String sessionId, String requestId,
+                       PairingEpoch pairing, long generation) throws Exception {
         JSONObject body = new JSONObject();
         body.put("model", model);
         body.put("messages", history);
         body.put("session_id", sessionId);
         body.put("request_id", requestId);
-        JSONObject result = request(base, token, "/v1/chat", body);
+        JSONObject result = request(base, token, "/v1/chat", body, 200, pairing, generation);
         if (!"response_only".equals(result.optString("mode"))) {
             throw new IllegalStateException("Gateway authority mismatch");
         }
