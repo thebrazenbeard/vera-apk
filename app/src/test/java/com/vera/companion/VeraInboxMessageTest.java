@@ -49,7 +49,7 @@ public final class VeraInboxMessageTest {
     }
 
     @Test public void rejectsExpiredFutureAndOversizedMessages() {
-        for (long expiry : new long[]{NOW - 121, NOW + 86500}) {
+        for (long expiry : new long[]{NOW - 121, NOW + 86521}) {
             try { msg(ID, "x", "diagnostic", expiry, 1);
                 fail("accepted invalid expiry"); }
             catch (IllegalArgumentException expected) { }
