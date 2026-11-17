@@ -95,4 +95,56 @@ public final class V2GatewayClient {
         if (reply.isEmpty() || reply.length()>16000) throw new IllegalStateException("Invalid reply");
         return reply;
     }
+
+    /** HTTPS V2 device-only foreground inbox. No V1 fallback, no sender action. */
+    public static List<VeraInboxMessage> inbox(String base, String token) throws Exception {
+        JSONObject wire = get(base, token, "/v2/inbox");
+        if (!VeraInboxMessage.authorizedEnvelope(
+                wire.optString("schema"), wire.optString("origin"),
+                wire.optString("node")))
+            throw new IllegalStateException("Unexpected inbox source");
+        JSONArray messages = wire.getJSONArray("messages");
+        if (messages.length() > 5)
+            throw new IllegalStateException("Unbounded incoming batch");
+        long now = System.currentTimeMillis() / 1000L;
+        List<VeraInboxMessage> result = new ArrayList<>();
+        java.util.HashSet<String> ids = new java.util.HashSet<>();
+        for (int i=0; i<messages.length(); i++) {
+            JSONObject item = messages.getJSONObject(i);
+            if (item.length()!=6 || !item.has("message_id") || !item.has("kind")
+                    || !item.has("body") || !item.has("expires_at")
+                    || !item.has("offer_attempt") || !item.has("state"))
+                throw new IllegalStateException("Invalid incoming schema");
+            if (!"OFFERED_NOT_DELIVERED".equals(item.getString("state")))
+                throw new IllegalStateException("Unverified delivery state");
+            Object expiration = item.get("expires_at");
+            Object attempt = item.get("offer_attempt");
+            if (!(expiration instanceof Number) || !(attempt instanceof Number))
+                throw new IllegalStateException("Invalid incoming metadata");
+            VeraInboxMessage msg = new VeraInboxMessage(
+                    item.getString("message_id"),
+                    item.getString("body"), item.getString("kind"),
+                    ((Number)expiration).longValue(),
+                    ((Number)attempt).intValue(), now);
+            if (!ids.add(msg.messageId))
+                throw new IllegalStateException("Duplicate message ID in batch");
+            result.add(msg);
+        }
+        return result;
+    }
+
+    /** Acknowledges durable device receipt, not human reading of the message. */
+    public static void acknowledgeInbox(
+            String base, String token, String messageId) throws Exception {
+        if (messageId == null || !messageId.matches("[a-f0-9]{32}"))
+            throw new IllegalArgumentException("Invalid acknowledgment id");
+        JSONObject response = post(base, token, "/v2/inbox/ack",
+                new JSONObject().put("message_id", messageId), 200);
+        if (!VeraInboxMessage.validAck(
+                response.optString("schema"), response.optString("origin"),
+                response.optString("message_id"), messageId,
+                response.optString("state")))
+            throw new IllegalStateException("Acknowledgment authority mismatch");
+    }
+
 }
