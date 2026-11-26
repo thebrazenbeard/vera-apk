@@ -20,6 +20,7 @@ import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,7 +34,12 @@ public final class MainActivity extends Activity {
     private LinearLayout transcript, connectionPanel;
     private Button connectionToggle;
     private Spinner models;
-    private Button send, v2NewChat;
+    private Button send, v2NewChat, inboxRefresh;
+    private TextView inboxStatus;
+    private final HashSet<String> shownInboxIds = new HashSet<>();
+    private final Object inboxLock = new Object();
+    private volatile long inboxEpoch = 0L;
+    private boolean inboxRequestInFlight;
     private String v2SessionId = "";
     private boolean usingV2;
     private ScrollView feed;
@@ -41,6 +47,9 @@ public final class MainActivity extends Activity {
     private ImageView backdrop;
     private boolean connected, busy;
     private boolean foreground;
+    private final Runnable nextInboxCheck = () -> {
+        if (foreground && connected && usingV2) pollVeraInbox();
+    };
     private int reconnectAttempts;
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private final Runnable reconnect = () -> {
@@ -201,6 +210,15 @@ public final class MainActivity extends Activity {
         });
         v2NewChat = addButton(content, "NEW SECURE CHAT", this::newSecureChat);
         v2NewChat.setVisibility(View.GONE);
+        inboxStatus = text("VERA PRIVATE INBOX  /  V2 DEVICE PAIRING REQUIRED", 12);
+        inboxStatus.setLetterSpacing(0.09f);
+        inboxStatus.setTextColor(Color.rgb(250, 194, 213));
+        inboxStatus.setBackground(rounded(Color.argb(220, 44, 20, 40),
+                Color.rgb(157, 78, 114), 13));
+        content.addView(inboxStatus);
+        inboxRefresh = addButton(content, "CHECK VERA MESSAGES", this::pollVeraInbox);
+        inboxStatus.setVisibility(View.GONE);
+        inboxRefresh.setVisibility(View.GONE);
         connectionPanel = new LinearLayout(this);
         connectionPanel.setOrientation(LinearLayout.VERTICAL);
         connectionPanel.setPadding(dp(10), dp(8), dp(10), dp(8));
@@ -244,8 +262,8 @@ public final class MainActivity extends Activity {
         transcript.setOrientation(LinearLayout.VERTICAL);
         transcript.setPadding(dp(2), dp(8), dp(2), dp(10));
         content.addView(transcript);
-        TextView intro = text("Private inference  •  Response only\n"
-                + "Your home models respond through Tailscale.", 13);
+        TextView intro = text("Private Vera channel\n"
+                + "Incoming messages require an authenticated V2 connection.", 13);
         intro.setTextColor(Color.rgb(249, 211, 220));
         intro.setGravity(Gravity.CENTER);
         intro.setBackground(rounded(Color.argb(215, 41, 17, 34),
@@ -304,13 +322,24 @@ public final class MainActivity extends Activity {
 
     private void save() {
         try {
-            SecureConfig.save(this, endpoint.getText().toString(), secret.getText().toString().trim());
+            String nextEndpoint = EndpointPolicy.normalize(endpoint.getText().toString());
+            String nextToken = secret.getText().toString().trim();
+            if (!nextToken.matches("[A-Za-z0-9_-]{32,128}"))
+                throw new IllegalArgumentException("Invalid pairing token");
+            synchronized (inboxLock) {
+                SecureConfig.save(this, nextEndpoint, nextToken);
+                SecureVeraInbox.clear(this);
+                inboxEpoch++;
+            }
+            inboxHandlerReset();
             secret.setText("");
             connected = false;
             history.clear();
             usingV2 = false;
             v2SessionId = "";
             v2NewChat.setVisibility(View.GONE);
+            inboxStatus.setVisibility(View.GONE);
+            inboxRefresh.setVisibility(View.GONE);
             connectionPanel.setVisibility(View.GONE);
             connectionToggle.setText("CONNECTION SETTINGS  ▾");
             state("Saved securely. Tap CONNECT.");
@@ -318,13 +347,25 @@ public final class MainActivity extends Activity {
     }
 
     private void unpair() {
-        SecureConfig.clear(this);
+        try {
+            synchronized (inboxLock) {
+                SecureVeraInbox.clear(this);
+                SecureConfig.clear(this);
+                inboxEpoch++;
+            }
+        } catch (Exception e) {
+            state("Private pairing could not be cleared; review device storage.");
+            return;
+        }
+        inboxHandlerReset();
         endpoint.setText("");
         secret.setText("");
         history.clear();
         usingV2 = false;
         v2SessionId = "";
         v2NewChat.setVisibility(View.GONE);
+        inboxStatus.setVisibility(View.GONE);
+        inboxRefresh.setVisibility(View.GONE);
         connected = false;
         retryHandler.removeCallbacks(reconnect);
         state("Pairing erased from this device");
@@ -392,12 +433,18 @@ public final class MainActivity extends Activity {
                         renderV2History(recovered);
                     }
                     v2NewChat.setVisibility(v2 ? View.VISIBLE : View.GONE);
+                    inboxStatus.setVisibility(v2 ? View.VISIBLE : View.GONE);
+                    inboxRefresh.setVisibility(v2 ? View.VISIBLE : View.GONE);
                     busy = false;
                     connected = true;
                     reconnectAttempts = 0;
                     retryHandler.removeCallbacks(reconnect);
-                    state(available.size() + (v2 ? " secured V2 models; history restored"
-                            : " legacy models available"));
+                    state(available.size() + (v2 ? " V2 models; session verified"
+                            : " legacy response-only models"));
+                    if (v2) {
+                        reloadPrivateInbox();
+                        scheduleInboxCheck(0);
+                    }
                 });
             } catch (Exception e) {
                 boolean unauthorized = ConnectionPolicy.requiresPairing(e.getMessage());
@@ -445,6 +492,7 @@ public final class MainActivity extends Activity {
                     append("VERA","New private conversation opened");
                     busy=false;
                     state("New V2 conversation ready");
+                    reloadPrivateInbox();
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> { busy=false; state("V2 session creation refused"); });
@@ -513,20 +561,117 @@ public final class MainActivity extends Activity {
         });
     }
 
+
+
+    private void inboxHandlerReset() {
+        retryHandler.removeCallbacks(nextInboxCheck);
+        inboxRequestInFlight = false;
+        shownInboxIds.clear();
+        if (inboxStatus != null) inboxStatus.setText("VERA PRIVATE INBOX  /  V2 PAIRING REQUIRED");
+    }
+
+    private void scheduleInboxCheck(long delayMillis) {
+        retryHandler.removeCallbacks(nextInboxCheck);
+        if (foreground && connected && usingV2 && SecureConfig.wantsConnection(this))
+            retryHandler.postDelayed(nextInboxCheck, delayMillis);
+    }
+
+    private void showStoredInbox(List<VeraInboxMessage> messages) {
+        if (!foreground || !usingV2) return;
+        for (VeraInboxMessage msg : messages) {
+            if (shownInboxIds.add(msg.messageId))
+                append("VERA  /  PRIVATE INBOX", msg.body);
+        }
+    }
+
+    private void reloadPrivateInbox() {
+        if (!foreground || !connected || !usingV2) return;
+        final long epoch = inboxEpoch;
+        final String url = SecureConfig.endpoint(this);
+        worker.execute(() -> {
+            try {
+                String token = SecureConfig.token(this);
+                List<VeraInboxMessage> cached;
+                synchronized (inboxLock) {
+                    if (inboxEpoch != epoch) return;
+                    cached = SecureVeraInbox.read(this, url, token);
+                }
+                runOnUiThread(() -> {
+                    if (inboxEpoch == epoch) showStoredInbox(cached);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (inboxEpoch == epoch && inboxStatus != null)
+                        inboxStatus.setText("VERA INBOX  /  ENCRYPTED STORAGE UNAVAILABLE");
+                });
+            }
+        });
+    }
+
+    private void pollVeraInbox() {
+        if (!foreground || !connected || !usingV2 || inboxRequestInFlight) return;
+        inboxRequestInFlight = true;
+        final long epoch = inboxEpoch;
+        final String url = SecureConfig.endpoint(this);
+        inboxStatus.setText("VERA INBOX  /  CHECKING SECURE DELIVERY...");
+        worker.execute(() -> {
+            try {
+                String token = SecureConfig.token(this);
+                List<VeraInboxMessage> incoming = V2GatewayClient.inbox(url, token);
+                List<VeraInboxMessage> cached;
+                synchronized (inboxLock) {
+                    if (epoch != inboxEpoch) return;
+                    for (VeraInboxMessage item : incoming)
+                        SecureVeraInbox.record(this, url, token, item);
+                    cached = SecureVeraInbox.read(this, url, token);
+                }
+                runOnUiThread(() -> {
+                    if (epoch != inboxEpoch) return;
+                    showStoredInbox(cached);
+                    inboxStatus.setText("VERA PRIVATE INBOX  /  SECURE V2 CHECKED");
+                });
+                // Acknowledge ONLY after authenticated receipt was durably
+                // encrypted. It is NOT a claim that the user read a message.
+                for (VeraInboxMessage item : incoming) {
+                    if (epoch != inboxEpoch) return;
+                    V2GatewayClient.acknowledgeInbox(url, token, item.messageId);
+                }
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (epoch != inboxEpoch) return;
+                    inboxStatus.setText("VERA INBOX  /  ROUTE OR PAIRING UNAVAILABLE");
+                });
+            } finally {
+                runOnUiThread(() -> {
+                    if (epoch != inboxEpoch) return;
+                    inboxRequestInFlight = false;
+                    scheduleInboxCheck(45000);
+                });
+            }
+        });
+    }
+
     @Override protected void onResume() {
         super.onResume();
         foreground = true;
-        if (SecureConfig.wantsConnection(this) && !busy) attemptConnection();
+        if (connected && usingV2) {
+            reloadPrivateInbox();
+            scheduleInboxCheck(0);
+        } else if (SecureConfig.wantsConnection(this) && !busy) {
+            attemptConnection();
+        }
     }
 
     @Override protected void onPause() {
         foreground = false;
         retryHandler.removeCallbacks(reconnect);
+        retryHandler.removeCallbacks(nextInboxCheck);
         super.onPause();
     }
 
     @Override public void onDestroy() {
         retryHandler.removeCallbacks(reconnect);
+        retryHandler.removeCallbacks(nextInboxCheck);
         worker.shutdownNow();
         super.onDestroy();
     }
